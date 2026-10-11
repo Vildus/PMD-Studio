@@ -48,10 +48,11 @@ PMD 85-2 compatibility mode.
 
 A transport bar (run/pause/stop/reset, save/load state, speed and turbo,
 mute, panel toggles, settings) sits above a docking area: the emulated
-screen is the permanent center tab, and the Keyboard, Cassette tape,
-Debugger and Memory panels dock around it (drag tabs, split, float them
-as windows). Which panels are open and where they sit — plus the window
-geometry and maximized state — persist in `layout.json` across restarts.
+screen is the permanent center tab, and the Keyboard, Joystick,
+Cassette tape, Debugger and Memory panels dock around it (drag tabs,
+split, float them as windows). Which panels are open and where they
+sit — plus the window geometry and maximized state — persist in
+`layout.json` across restarts.
 
 The settings window covers the machine configuration (model, monitor
 ROM, ROM module, applied on reboot), audio, speed, tape behaviour and
@@ -117,6 +118,22 @@ panel is a reference view of the PMD layout: caps light up while the
 corresponding emulated key is held, and they are clickable (pointer
 held on a cap presses the key, sliding across caps slides the
 keypress).
+
+## Joysticks
+
+The 4004/482 joystick (five buttons: down, up, right, left, fire) is
+emulated on both I/O board connectors, GPIO/0 (K3, port `4Ch`) and
+GPIO/1 (K4, port `4Dh`), behind the MH8286 driver as on hardware: a
+program that has not opened the driver transistor (PC4/PC0 after the
+`92h`/`11h` init) reads a released stick, just like the real machine.
+
+A gamepad (e.g. a PS4 controller) drives the joysticks: the D-pad and
+left stick move, `Cross`/`Circle`/`Square`/`Triangle` and the
+shoulders fire. Each pad is assigned to a connector (or off) in the
+Joystick panel — a dockable tab next to the Keyboard reference, with a
+live diagram of both sticks that is also mouse-clickable, the
+per-connector driver state and the master enable switch. Assignments
+persist in the settings.
 
 ## Desktop integration
 

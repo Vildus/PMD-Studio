@@ -12,6 +12,7 @@ use crate::chips::pit8253::I8253;
 use crate::chips::usart8251::I8251;
 use crate::cpu::{Bus, Cpu, Flags};
 use crate::keyboard::Keyboard;
+use crate::joystick::Joystick;
 use crate::model::Model;
 use crate::state::{StateError, StateReader, StateWriter};
 use crate::tapedeck::{PlayItem, TapeDeck};
@@ -30,6 +31,9 @@ pub struct MachineBus {
     pub model: Model,
     pub memory: Memory,
     pub keyboard: Keyboard,
+    /// 4004/482 joysticks: index 0 = GPIO/0 (K3, port A `4Ch`),
+    /// index 1 = GPIO/1 (K4, port B `4Dh`).
+    pub joysticks: [Joystick; 2],
     /// Motherboard 8255: keyboard scan, speaker, LEDs.
     ppi_system: I8255,
     /// I/O board 8255 for GPIO/0 and GPIO/1 (K3/K4 connectors).
@@ -65,6 +69,7 @@ impl MachineBus {
             model,
             memory,
             keyboard: Keyboard::new(),
+            joysticks: [Joystick::new(), Joystick::new()],
             ppi_system: I8255::new(),
             ppi_gpio: I8255::new(),
             ppi_ims2: I8255::new(),
@@ -87,6 +92,8 @@ impl MachineBus {
     pub fn reset(&mut self) {
         self.memory.reset();
         self.keyboard.reset();
+        self.joysticks[0].reset();
+        self.joysticks[1].reset();
         self.ppi_system.reset();
         self.ppi_gpio.reset();
         self.ppi_ims2.reset();
@@ -250,6 +257,19 @@ impl MachineBus {
         self.memory.rom_module.is_some()
     }
 
+    /// Whether the joystick on a GPIO connector is readable: PC4
+    /// (GPIO/0) resp. PC0 (GPIO/1) in the port C latch opens the
+    /// driver's direction transistor and grounds the button
+    /// contacts. Until the program sets the bit, a held button
+    /// cannot pull its line low.
+    pub fn joystick_readable(&self, port: usize) -> bool {
+        let bit = match port {
+            0 => 0x10, // PC4
+            _ => 0x01, // PC0
+        };
+        self.ppi_gpio.outputs[2] & bit != 0
+    }
+
     fn io_read(&mut self, port: u8) -> u8 {
         // All I/O reads return open bus while the startup shadow map is
         // still active.
@@ -281,7 +301,25 @@ impl MachineBus {
                 // I/O board interfaces
                 match port & 0x70 {
                     0x10 => return self.uart.read(port as u32 & 1),
-                    0x40 => return self.ppi_gpio.read(Port::from_index(reg), 0xFF, 0xFF, 0xFF),
+                    0x40 => {
+                        // The 4004/482 joysticks on GPIO/0 and GPIO/1:
+                        // PC4 resp. PC0 in the port C latch open the
+                        // driver's direction transistor, which also
+                        // grounds the buttons — without it the stick is
+                        // disconnected and the lines read high.
+                        let pc = self.ppi_gpio.outputs[2];
+                        let pa = if pc & 0x10 != 0 {
+                            self.joysticks[0].lines()
+                        } else {
+                            0xFF
+                        };
+                        let pb = if pc & 0x01 != 0 {
+                            self.joysticks[1].lines()
+                        } else {
+                            0xFF
+                        };
+                        return self.ppi_gpio.read(Port::from_index(reg), pa, pb, 0xFF);
+                    }
                     0x50 => return self.pit.read(port as u32 & 3),
                     0x70 => return self.ppi_ims2.read(Port::from_index(reg), 0xFF, 0xFF, 0xFF),
                     _ => {}
@@ -715,6 +753,9 @@ fn model_from_tag(tag: u8) -> Option<Model> {
 }
 
 #[cfg(test)]
+// The 0xFF & !mask form documents that the upper bits read high;
+// clippy sees it as a no-op.
+#[allow(clippy::identity_op)]
 mod tests {
     use super::*;
     use crate::keyboard::Key;
@@ -991,5 +1032,90 @@ mod tests {
         assert_eq!(m.cpu.a, 0x42);
         assert_eq!(m.cpu.b, 0x42);
         assert!(m.cpu.halted);
+    }
+
+    // ----- 4004/482 joysticks -----
+
+    use crate::joystick::Button;
+
+    /// A machine with the startup shadow map dropped, so GPIO port
+    /// reads go through (any I/O write clears the map).
+    fn gpio() -> Machine {
+        let mut m = Machine::new(Model::Pmd853, &rom(0x2000), None);
+        m.bus.io_write(0x87, 0x00);
+        m
+    }
+
+    #[test]
+    fn joystick_reads_canonical_sequence() {
+        let mut m = gpio();
+        // MVI A,92h; OUT 4Fh — mode 0, PA/PB inputs, PC output.
+        m.bus.io_write(0x4F, 0x92);
+        // MVI A,11h; OUT 4Eh — PC4|PC0: both driver transistors open,
+        // the button contacts are grounded.
+        m.bus.io_write(0x4E, 0x11);
+
+        // Stick 0 on GPIO/0 (PA): Up (bit 1) + fire (bit 4) held.
+        m.bus.joysticks[0].set_button(Button::Up, true);
+        m.bus.joysticks[0].set_button(Button::Fire, true);
+        let read = m.bus.io_read(0x4C);
+        // The lines read in negated form, upper 3 bits high.
+        assert_eq!(read, 0xFF & !(0x02 | 0x10));
+        // The program's IN 4Ch; CMA; ANI 1Fh.
+        assert_eq!(!read & 0x1F, 0x02 | 0x10);
+
+        // Stick 1 on GPIO/1 (PB): every button down reads 0xE0.
+        for &b in &Button::ALL {
+            m.bus.joysticks[1].set_button(b, true);
+        }
+        assert_eq!(m.bus.io_read(0x4D), 0xE0);
+    }
+
+    #[test]
+    fn joystick_disconnected_without_driver_enable() {
+        let mut m = gpio();
+        m.bus.io_write(0x4F, 0x92); // mode set, but the PC latch stays 0
+        m.bus.joysticks[0].set_button(Button::Fire, true);
+        m.bus.joysticks[1].set_button(Button::Down, true);
+        // No transistor -> no ground for the contacts: released stick.
+        assert_eq!(m.bus.io_read(0x4C), 0xFF);
+        assert_eq!(m.bus.io_read(0x4D), 0xFF);
+    }
+
+    #[test]
+    fn joystick_gpio1_only_enable() {
+        let mut m = gpio();
+        m.bus.io_write(0x4F, 0x92);
+        // 01h: only PC0 — the joystick-on-GPIO/1 layout (GPIO/0 is
+        // left to a device that wants the driver as output).
+        m.bus.io_write(0x4E, 0x01);
+        m.bus.joysticks[0].set_button(Button::Down, true);
+        m.bus.joysticks[1].set_button(Button::Down, true);
+        assert_eq!(m.bus.io_read(0x4C), 0xFF);
+        assert_eq!(m.bus.io_read(0x4D), 0xFE);
+    }
+
+    #[test]
+    fn joystick_enable_via_bsr_bit_set() {
+        let mut m = gpio();
+        m.bus.io_write(0x4F, 0x92);
+        // BSR "set PC4" instead of the full OUT 4Eh write.
+        m.bus.io_write(0x4F, 0x09);
+        m.bus.joysticks[0].set_button(Button::Right, true);
+        assert_eq!(m.bus.io_read(0x4C), 0xFF & !0x04);
+        // And a BSR reset closes the transistor again.
+        m.bus.io_write(0x4F, 0x08);
+        assert_eq!(m.bus.io_read(0x4C), 0xFF);
+    }
+
+    #[test]
+    fn joystick_reset_releases_buttons() {
+        let mut m = gpio();
+        m.bus.io_write(0x4F, 0x92);
+        m.bus.io_write(0x4E, 0x11);
+        m.bus.joysticks[0].set_button(Button::Left, true);
+        m.bus.reset();
+        assert_eq!(m.bus.io_read(0x4C), 0xFF);
+        assert!(!m.bus.joysticks[0].is_pressed(Button::Left));
     }
 }

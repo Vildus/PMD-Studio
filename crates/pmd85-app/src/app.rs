@@ -15,6 +15,7 @@ use pmd85_core::{Machine, Model};
 use crate::audio;
 use crate::catalog::RomCatalog;
 use crate::config::{self, AppSettings};
+use crate::gamepad::GamepadInput;
 use crate::speed::{Pacer, SPEED_MAX, SPEED_MIN, TURBO_BUDGET};
 use crate::ui::theme::Theme;
 use crate::ui::UiState;
@@ -447,6 +448,9 @@ pub struct App {
     /// Cassette tape editor/deck state.
     pub tape: TapeState,
 
+    /// Host gamepads, mapped to the 4004/482 joysticks.
+    pub gamepads: GamepadInput,
+
     /// Emulated frames since the last machine (re)start.
     pub frames_done: u64,
 
@@ -544,6 +548,7 @@ impl App {
                 flash: settings.tape_warp,
                 ..TapeState::default()
             },
+            gamepads: GamepadInput::new(),
             ui: UiState::default(),
             settings,
             themes: Vec::new(),
@@ -1023,6 +1028,15 @@ impl App {
     /// Run the emulation for this render frame, feed the speaker, and
     /// update the screen texture. Called once per render frame.
     pub fn advance(&mut self) {
+        // Gamepads first: pump events, merge the pads' buttons with
+        // any the Joystick panel holds via mouse, and feed the
+        // emulated sticks (level-based, so pause and turbo keep the
+        // state fresh without losing presses).
+        for message in self.gamepads.poll() {
+            self.notify(message);
+        }
+        self.apply_joysticks();
+
         let frames = if self.running {
             if self.speed.turbo {
                 let start = Instant::now();
@@ -1089,6 +1103,32 @@ impl App {
                 ));
             }
         }
+    }
+
+    /// Feed the emulated joysticks: every pad assigned to a connector
+    /// is ORed in (so two pads can share GPIO/0), plus a button held
+    /// by mouse in the Joystick panel. Disabled means a released
+    /// stick, and so does an unassigned pad.
+    fn apply_joysticks(&mut self) {
+        let mut ports = [0u8; 2];
+        if self.settings.joystick_enabled {
+            for (uuid, pad) in self.gamepads.pads() {
+                let port = self
+                    .settings
+                    .gamepad_ports
+                    .get(uuid)
+                    .copied()
+                    .unwrap_or_default();
+                if let Some(connector) = port.connector() {
+                    ports[connector] |= pad.mask;
+                }
+            }
+            if let Some((connector, button)) = self.ui.mouse_joystick {
+                ports[connector] |= button.bit();
+            }
+        }
+        self.machine.bus.joysticks[0].set_mask(ports[0]);
+        self.machine.bus.joysticks[1].set_mask(ports[1]);
     }
 
     /// Whether speaker audio should be submitted this frame: only at

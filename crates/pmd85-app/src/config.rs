@@ -4,6 +4,7 @@
 //! CLI arguments override the persisted values for that run; changes
 //! made in the UI are written back immediately (the file is small).
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -38,6 +39,35 @@ pub struct AppSettings {
     /// Draw the custom titlebar (minimize/maximize/close buttons,
     /// drag) instead of the system window frame.
     pub custom_titlebar: bool,
+    /// Master switch for the gamepad-to-joystick input path.
+    pub joystick_enabled: bool,
+    /// Per-gamepad assignment (key = the pad's UUID in hex): which
+    /// joystick connector the pad drives. Pads not in the map drive
+    /// GPIO/0, the connector virtually all games read.
+    pub gamepad_ports: BTreeMap<String, GamepadPort>,
+}
+
+/// Which joystick connector a gamepad drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GamepadPort {
+    /// GPIO/0 (K3, port `4Ch`) — joystick 0.
+    #[default]
+    Gpio0,
+    /// GPIO/1 (K4, port `4Dh`) — joystick 1.
+    Gpio1,
+    /// Ignore the pad entirely.
+    Off,
+}
+
+impl GamepadPort {
+    /// The connector index, or `None` for [`GamepadPort::Off`].
+    pub fn connector(self) -> Option<usize> {
+        match self {
+            GamepadPort::Gpio0 => Some(0),
+            GamepadPort::Gpio1 => Some(1),
+            GamepadPort::Off => None,
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -53,6 +83,8 @@ impl Default for AppSettings {
             tape_autostop: true,
             tape_warp: true,
             custom_titlebar: true,
+            joystick_enabled: true,
+            gamepad_ports: BTreeMap::new(),
         }
     }
 }
@@ -179,6 +211,10 @@ mod tests {
             tape_autostop: false,
             tape_warp: false,
             custom_titlebar: false,
+            joystick_enabled: false,
+            gamepad_ports: [("00112233445566778899aabbccddeeff".to_string(), GamepadPort::Gpio1)]
+                .into_iter()
+                .collect(),
         };
         s.save(&dir);
         let loaded = AppSettings::load(&dir);

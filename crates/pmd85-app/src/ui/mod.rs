@@ -6,6 +6,7 @@
 pub mod controls;
 pub mod debug;
 pub mod dock;
+pub mod joystick;
 pub mod keyboard;
 pub mod screen;
 pub mod settings;
@@ -41,6 +42,11 @@ pub struct UiState {
     pub mouse_key: Option<pmd85_core::keyboard::Key>,
     /// Whether the keyboard view's RST cap is pointer-held.
     pub mouse_rst: bool,
+    /// Joystick button currently held down via a click in the
+    /// joystick view, and which connector's stick it belongs to
+    /// (released when the pointer button goes up). Merged with the
+    /// gamepad state each frame by [`crate::app::App::advance`].
+    pub mouse_joystick: Option<(usize, pmd85_core::joystick::Button)>,
 }
 
 impl Default for UiState {
@@ -55,6 +61,7 @@ impl Default for UiState {
             theme_draft: None,
             mouse_key: None,
             mouse_rst: false,
+            mouse_joystick: None,
         }
     }
 }
@@ -177,6 +184,10 @@ mod tests {
             (
                 "keyboard-open",
                 Box::new(|a| crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Keyboard)),
+            ),
+            (
+                "joystick-open",
+                Box::new(|a| crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Joystick)),
             ),
             (
                 "settings-changed",

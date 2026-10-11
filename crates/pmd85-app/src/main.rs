@@ -14,6 +14,7 @@ mod args;
 mod audio;
 mod catalog;
 mod config;
+mod gamepad;
 mod icon;
 mod keys;
 mod speed;

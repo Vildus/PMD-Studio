@@ -182,6 +182,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                     if ui.add(kbd).on_hover_text("Keyboard layout").clicked() {
                         dock::toggle_tab(&mut app.ui.dock, dock::Tab::Keyboard);
                     }
+                    // 4004/482 joysticks and gamepads (dock tab).
+                    let joy =
+                        egui::Button::new(egui::RichText::new(icon::GAME_CONTROLLER).size(14.0))
+                            .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Joystick));
+                    if ui.add(joy).on_hover_text("Joysticks / gamepads").clicked() {
+                        dock::toggle_tab(&mut app.ui.dock, dock::Tab::Joystick);
+                    }
                     // Cassette tape editor (dock tab).
                     let tape = egui::Button::new(
                         egui::RichText::new(icon::CASSETTE_TAPE).size(14.0),

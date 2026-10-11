@@ -6,7 +6,7 @@
 
 use crate::app::App;
 use crate::ui::theme::Theme;
-use crate::ui::{debug, keyboard, screen, tape};
+use crate::ui::{debug, joystick, keyboard, screen, tape};
 use egui::{Color32, CornerRadius, Stroke};
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
@@ -19,6 +19,9 @@ pub enum Tab {
     Screen,
     /// The keyboard layout reference.
     Keyboard,
+    /// The 4004/482 joysticks: live state, mouse control and the
+    /// gamepad-to-connector assignment.
+    Joystick,
     /// The cassette tape editor.
     Tape,
     /// The debugger: register strip, step controls, disassembly
@@ -36,6 +39,7 @@ impl Tab {
         match self {
             Tab::Screen => "Screen",
             Tab::Keyboard => "Keyboard",
+            Tab::Joystick => "Joystick",
             Tab::Tape => "Cassette tape",
             Tab::Debugger => "Debugger",
             Tab::Memory => "Memory",
@@ -183,6 +187,7 @@ impl TabViewer for Viewer<'_> {
         match *tab {
             Tab::Screen => screen::draw(ui, self.app),
             Tab::Keyboard => keyboard::ui(ui, self.app),
+            Tab::Joystick => joystick::ui(ui, self.app),
             Tab::Tape => tape::ui(ui, self.app),
             Tab::Debugger => debug::debugger(ui, self.app),
             Tab::Memory => debug::memory(ui, self.app),
@@ -204,9 +209,12 @@ impl TabViewer for Viewer<'_> {
     }
 
     fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
-        // Closing the keyboard must release a pointer-held key.
-        if *tab == Tab::Keyboard {
-            keyboard::release_pointer(self.app);
+        // Closing a live-input panel must release a pointer-held
+        // button.
+        match *tab {
+            Tab::Keyboard => keyboard::release_pointer(self.app),
+            Tab::Joystick => joystick::release_pointer(self.app),
+            _ => {}
         }
         OnCloseResponse::Close
     }
