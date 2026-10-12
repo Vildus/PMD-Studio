@@ -102,10 +102,7 @@ impl RomCatalog {
                 continue;
             };
             let file_name = file_name.to_string();
-            let description = descriptions
-                .get(&file_name)
-                .cloned()
-                .unwrap_or_default();
+            let description = descriptions.get(&file_name).cloned().unwrap_or_default();
             let rom = RomEntry {
                 file_name,
                 path,
@@ -120,10 +117,7 @@ impl RomCatalog {
         }
         monitors.sort_by(|a, b| a.file_name.cmp(&b.file_name));
         modules.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-        RomCatalog {
-            monitors,
-            modules,
-        }
+        RomCatalog { monitors, modules }
     }
 
     pub fn monitors(&self) -> &[RomEntry] {
@@ -203,7 +197,9 @@ mod tests {
         assert!(catalog.monitors()[0].description.contains("0E000h"));
         // Lookup by name, including the model default monitor.
         assert_eq!(
-            catalog.find(Model::Pmd853.default_monitor()).map(|e| &e.file_name),
+            catalog
+                .find(Model::Pmd853.default_monitor())
+                .map(|e| &e.file_name),
             Some(&"monit3.rom".to_string())
         );
         assert!(catalog.find("nope.rom").is_none());

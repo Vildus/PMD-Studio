@@ -462,7 +462,7 @@ mod tests {
         pit.write(0, 0x12); // initial 0x1234
         pit.tick(0, true); // loads
         pit.tick(0, true); // 0x1233
-        // latch counter 0
+                           // latch counter 0
         pit.write(3, 0b0000_0000);
         let lsb = pit.read(0);
         let msb = pit.read(0);

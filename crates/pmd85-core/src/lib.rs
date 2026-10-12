@@ -13,6 +13,7 @@ pub mod joystick;
 pub mod keyboard;
 pub mod machine;
 pub mod model;
+pub mod module;
 pub mod state;
 pub mod tape;
 pub mod tapedeck;

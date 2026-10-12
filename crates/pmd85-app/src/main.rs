@@ -17,6 +17,7 @@ mod config;
 mod gamepad;
 mod icon;
 mod keys;
+mod project;
 mod speed;
 mod ui;
 
@@ -85,7 +86,11 @@ impl ApplicationHandler for Application {
         #[cfg(target_os = "linux")]
         let attrs =
             winit::platform::wayland::WindowAttributesExtWayland::with_name(attrs, APP_ID, APP_ID);
-        let window = Arc::new(event_loop.create_window(attrs).expect("cannot create window"));
+        let window = Arc::new(
+            event_loop
+                .create_window(attrs)
+                .expect("cannot create window"),
+        );
 
         let ctx = self.app.ctx.clone();
         let mut painter = pollster::block_on(egui_wgpu::winit::Painter::new(
@@ -94,7 +99,9 @@ impl ApplicationHandler for Application {
             false,
             egui_wgpu::RendererOptions::default(),
         ));
-        if let Err(e) = pollster::block_on(painter.set_window(ViewportId::ROOT, Some(window.clone()))) {
+        if let Err(e) =
+            pollster::block_on(painter.set_window(ViewportId::ROOT, Some(window.clone())))
+        {
             panic!("cannot create wgpu surface: {e}");
         }
         let mut egui_winit = egui_winit::State::new(
@@ -161,9 +168,7 @@ impl ApplicationHandler for Application {
                                     Some(keys::HostShortcut::QuickLoad) => {
                                         self.app.quick_load_state()
                                     }
-                                    Some(keys::HostShortcut::DebugStep) => {
-                                        self.app.debug_step()
-                                    }
+                                    Some(keys::HostShortcut::DebugStep) => self.app.debug_step(),
                                     Some(keys::HostShortcut::DebugStepOver) => {
                                         self.app.debug_step_over()
                                     }
@@ -253,9 +258,7 @@ impl Application {
                 .ctx
                 .input(|i| i.pointer.latest_pos().map(|pos| (pos, i.modifiers)))
             {
-                raw_input
-                    .events
-                    .push(pointer_release_event(pos, modifiers));
+                raw_input.events.push(pointer_release_event(pos, modifiers));
             }
         }
         let ctx = self.app.ctx.clone();
@@ -287,9 +290,7 @@ impl Application {
                     self.pointer_release_due = true;
                 }
                 WindowRequest::Minimize => w.window.set_minimized(true),
-                WindowRequest::ToggleMaximize => {
-                    w.window.set_maximized(!w.window.is_maximized())
-                }
+                WindowRequest::ToggleMaximize => w.window.set_maximized(!w.window.is_maximized()),
                 WindowRequest::Decorate(on) => w.window.set_decorations(on),
                 WindowRequest::Close => event_loop.exit(),
             }
@@ -355,7 +356,9 @@ fn main() {
         alt_held: false,
         pointer_release_due: false,
     };
-    event_loop.run_app(&mut application).expect("event loop failed");
+    event_loop
+        .run_app(&mut application)
+        .expect("event loop failed");
 }
 
 /// The button-release event for a compositor-driven interactive

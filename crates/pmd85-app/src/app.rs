@@ -16,6 +16,7 @@ use crate::audio;
 use crate::catalog::RomCatalog;
 use crate::config::{self, AppSettings};
 use crate::gamepad::GamepadInput;
+use crate::project::Project;
 use crate::speed::{Pacer, SPEED_MAX, SPEED_MIN, TURBO_BUDGET};
 use crate::ui::theme::Theme;
 use crate::ui::UiState;
@@ -266,7 +267,13 @@ impl TapeState {
     /// The loadable content of a file (its block's body payload).
     pub fn export_file(&self, file: usize) -> Option<Vec<u8>> {
         let files = self.files();
-        Some(self.tape.blocks.get(files.get(file)?.block)?.content().to_vec())
+        Some(
+            self.tape
+                .blocks
+                .get(files.get(file)?.block)?
+                .content()
+                .to_vec(),
+        )
     }
 
     /// Delete a file: its block and continuation blocks.
@@ -302,9 +309,7 @@ impl TapeState {
         } else {
             o_start
         };
-        self.tape
-            .blocks
-            .splice(insert_at..insert_at, moved);
+        self.tape.blocks.splice(insert_at..insert_at, moved);
         self.dirty = true;
         self.selected = Some(target as usize);
     }
@@ -405,7 +410,69 @@ impl TapeState {
     }
 }
 
-/// The whole application state, minus windowing.
+/// A keystroke sequence the app types into the emulated keyboard
+/// (the project Run's monitor command). Keys are held and released
+/// like a human's press so the monitor's scan sees them. The first
+/// key waits for the monitor to settle at its command prompt —
+/// detected by the keyboard scan column actively cycling, which the
+/// command loop does and the boot (RAM test) does not — with a
+/// failsafe timeout for other monitors.
+#[derive(Debug)]
+pub(crate) struct AutoType {
+    queue: VecDeque<AutoTypeItem>,
+    current: Option<pmd85_core::keyboard::Key>,
+    /// Frames left in the current press/release cycle.
+    phase: u16,
+    /// Still waiting for the command prompt before the next key.
+    waiting: bool,
+    /// A tape file to start playing when the last key of the command
+    /// goes down (the monitor dispatches on that Enter, so the tape
+    /// is already rolling when its read loop starts; starting any
+    /// earlier would burn the flash session's patience while the
+    /// machine still boots).
+    play_on_start: Option<usize>,
+    /// The last-seen keyboard scan column, and how many consecutive
+    /// frames it changed in (the scan running).
+    last_scan: u8,
+    scan_changes: u8,
+    /// Frames waited so far (the failsafe clock).
+    waited: u32,
+}
+
+/// One step of the auto-typer's script.
+#[derive(Clone, Copy, Debug)]
+enum AutoTypeItem {
+    /// Press (and release) the key.
+    Press(pmd85_core::keyboard::Key),
+    /// Wait for the monitor's command prompt again — used between
+    /// the 85-3's `JUMP FFF0` (whose compatibility switch reboots
+    /// the machine) and the `MGLD` that follows.
+    WaitPrompt,
+}
+
+/// After the prompt shows, a couple of frames of grace.
+const AUTOTYPE_SETTLE: u16 = 2;
+/// Give up waiting for the prompt after this many frames and type
+/// anyway (some 12 s at 50 Hz — far beyond any monitor boot).
+const AUTOTYPE_TIMEOUT: u32 = 600;
+/// Consecutive frames of a cycling scan column that mean "prompt".
+const AUTOTYPE_SCAN_FRAMES: u8 = 3;
+
+impl AutoType {
+    fn new(script: &[AutoTypeItem], play_on_start: Option<usize>) -> Self {
+        AutoType {
+            queue: script.iter().copied().collect(),
+            current: None,
+            phase: 0,
+            waiting: true,
+            play_on_start,
+            last_scan: 0,
+            scan_changes: 0,
+            waited: 0,
+        }
+    }
+}
+
 /// What the UI asks the window manager to do. The UI draws with only
 /// `&mut App` and cannot touch the window, so the custom titlebar
 /// queues these and the winit loop drains them after each frame.
@@ -450,6 +517,13 @@ pub struct App {
 
     /// Host gamepads, mapped to the 4004/482 joysticks.
     pub gamepads: GamepadInput,
+
+    /// The open IDE project (sources + build), if any.
+    pub project: Option<Project>,
+
+    /// A keystroke sequence being typed into the emulated keyboard
+    /// (see [`AutoType`]).
+    pub(crate) auto_type: Option<AutoType>,
 
     /// Emulated frames since the last machine (re)start.
     pub frames_done: u64,
@@ -496,15 +570,8 @@ impl App {
     /// Build the app state. The machine is constructed from the merged
     /// CLI/settings configuration; a missing ROM is not fatal (the
     /// machine comes up with a blank monitor and a notification).
-    pub fn new(
-        ctx: egui::Context,
-        args: &crate::args::Args,
-        settings: AppSettings,
-    ) -> Self {
-        let rom_dir = args
-            .rom_dir
-            .clone()
-            .unwrap_or_else(default_rom_dir);
+    pub fn new(ctx: egui::Context, args: &crate::args::Args, settings: AppSettings) -> Self {
+        let rom_dir = args.rom_dir.clone().unwrap_or_else(default_rom_dir);
         let catalog = RomCatalog::scan(&rom_dir);
 
         let model = args
@@ -514,7 +581,10 @@ impl App {
                 Model::from_str_loose(&settings.model)
             })
             .unwrap_or_default();
-        let rom_module = args.rom_module.clone().or_else(|| settings.rom_module.clone());
+        let rom_module = args
+            .rom_module
+            .clone()
+            .or_else(|| settings.rom_module.clone());
         let monitor = args.monitor.clone().or_else(|| settings.monitor.clone());
         let config = MachineConfig {
             model,
@@ -549,6 +619,8 @@ impl App {
                 ..TapeState::default()
             },
             gamepads: GamepadInput::new(),
+            project: None,
+            auto_type: None,
             ui: UiState::default(),
             settings,
             themes: Vec::new(),
@@ -594,8 +666,11 @@ impl App {
     /// Rebuild the machine from a cold-start configuration. Never
     /// panics: load failures produce a notification and a blank ROM.
     pub fn rebuild_machine(&mut self, config: &MachineConfig) {
-        let monitor =
-            self.load_rom(&config.monitor, config.model.default_monitor(), config.model);
+        let monitor = self.load_rom(
+            &config.monitor,
+            config.model.default_monitor(),
+            config.model,
+        );
         let module = config
             .rom_module
             .as_ref()
@@ -620,12 +695,7 @@ impl App {
     /// Resolve a ROM reference to (bytes, missing). `None` falls back to
     /// `fallback` (a file name in the ROM directory). A name that is
     /// not in the catalog is treated as a path.
-    fn load_rom(
-        &self,
-        name: &Option<String>,
-        fallback: &str,
-        model: Model,
-    ) -> (Vec<u8>, bool) {
+    fn load_rom(&self, name: &Option<String>, fallback: &str, model: Model) -> (Vec<u8>, bool) {
         let name = name.as_deref().unwrap_or(fallback);
         let path = match self.catalog.find(name) {
             Some(entry) => entry.path.clone(),
@@ -766,6 +836,390 @@ impl App {
         self.persist();
     }
 
+    // ----- project -----------------------------------------------------
+
+    /// Open the project in `dir` (replacing any open project), show
+    /// the Project tab and build once. Parse problems become a
+    /// notification, never a failure to open.
+    pub fn open_project(&mut self, dir: &Path) {
+        match Project::open(dir) {
+            Ok(mut project) => {
+                project.build = Some(project.build());
+                let name = project.manifest.name.clone();
+                self.project = Some(project);
+                crate::ui::dock::show_tab(&mut self.ui.dock, crate::ui::dock::Tab::Project);
+                self.notify(format!("Project {name:?} opened"));
+            }
+            Err(e) => self.notify(e),
+        }
+    }
+
+    /// Create and open a fresh project in `dir`.
+    pub fn create_project(&mut self, dir: &Path) {
+        let name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("project")
+            .to_string();
+        match Project::create(dir, &name) {
+            Ok(mut project) => {
+                project.build = Some(project.build());
+                self.project = Some(project);
+                crate::ui::dock::show_tab(&mut self.ui.dock, crate::ui::dock::Tab::Project);
+                self.notify(format!("Project {name:?} created"));
+            }
+            Err(e) => self.notify(e),
+        }
+    }
+
+    /// Close the project (buffers with unsaved edits are dropped;
+    /// the files on disk stay as they are).
+    pub fn close_project(&mut self) {
+        if let Some(project) = &self.project {
+            if project.files.iter().any(|f| f.dirty) {
+                self.notify("Project closed; unsaved edits discarded");
+            }
+        }
+        self.project = None;
+        crate::ui::dock::hide_tab(&mut self.ui.dock, crate::ui::dock::Tab::Project);
+        crate::ui::dock::hide_tab(&mut self.ui.dock, crate::ui::dock::Tab::Problems);
+    }
+
+    /// Build the project (Ctrl+B): assemble the current buffers,
+    /// keep the result for the problems panel and the run commands.
+    /// Returns whether the build succeeded.
+    pub fn build_project(&mut self) -> bool {
+        let Some(project) = self.project.as_mut() else {
+            return false;
+        };
+        let build = project.build();
+        let ok = !build.has_errors();
+        project.build = Some(build);
+        if ok {
+            self.notify("Build OK");
+        } else {
+            let count = project
+                .build
+                .as_ref()
+                .map(|b| b.asm.diagnostics.len())
+                .unwrap_or(0);
+            self.notify(format!("Build failed: {count} problem(s)"));
+            crate::ui::dock::show_tab(&mut self.ui.dock, crate::ui::dock::Tab::Problems);
+        }
+        ok
+    }
+
+    /// Save the active source buffer (Ctrl+S).
+    pub fn save_project_file(&mut self) {
+        let Some(project) = self.project.as_mut() else {
+            return;
+        };
+        match project.save_active() {
+            Ok(path) => self.notify(format!("Saved {path}")),
+            Err(e) => self.notify(e),
+        }
+    }
+
+    /// Run the project (F5), the authentic way: reset to the
+    /// monitor, put the built file on the (flash) tape and type the
+    /// monitor's load command `MGLD` into the emulated keyboard. The
+    /// monitor reads the header, flash-loads the blocks, checksums
+    /// and — with the autostart target — the loader block hijacks the
+    /// reader's return slot and runs the program, all for real.
+    pub fn run_project(&mut self) {
+        if !self.build_project() {
+            return;
+        }
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let Some(build) = project.build.as_ref() else {
+            return;
+        };
+        let Some((base, image)) = build.asm.flat_image(0) else {
+            self.notify("Nothing was assembled: no code emitted");
+            return;
+        };
+        match &project.manifest.target {
+            crate::project::Target::Tape { name, autostart } => {
+                // With autostart, the tape carries the wiki's autorun
+                // pair: a '?' file whose body is the small loader
+                // saved at 0x7FD7 (its last word overwrites the block
+                // reader's return slot at 0x7FFB), followed by a
+                // headerless continuation with the program itself.
+                // Without autostart, a plain '?' block that MGLD loads
+                // and leaves in memory. (The monitors' MGLD expects
+                // the conventional '?' type — the block-type variable
+                // C136 is initialized to 0x3F at warm start and no
+                // command ever changes it.)
+                let blocks: Vec<pmd85_core::tape::TapeBlock> = if *autostart {
+                    // The loader lives at 0x7FD7..=0x7FFC; the program
+                    // must not overlap it (it would be loaded over
+                    // the loader's own return-slot word).
+                    let top = base.wrapping_add(image.len() as u16);
+                    if base <= 0x7FFC && top > 0x7FD7 && base <= top {
+                        self.notify(format!(
+                            "Autostart needs 0x7FD7..0x7FFC free, but the program spans {base:04X}..{top:04X}"
+                        ));
+                        return;
+                    }
+                    let entry = build
+                        .asm
+                        .entry
+                        .filter(|&e| (base..top).contains(&e))
+                        .unwrap_or(base);
+                    let loader = pmd85_core::tape::autorun_loader(
+                        self.machine.bus.model,
+                        base,
+                        entry,
+                        image.len() as u16,
+                    );
+                    match pmd85_core::tape::make_file(0, b'?', &name.clone(), 0x7FD7, &loader) {
+                        Ok(block) => vec![block, pmd85_core::tape::make_continuation(&image)],
+                        Err(e) => {
+                            self.notify(format!("Cannot build the tape file: {e}"));
+                            return;
+                        }
+                    }
+                } else {
+                    match pmd85_core::tape::make_file(0, b'?', &name.clone(), base, &image) {
+                        Ok(block) => vec![block],
+                        Err(e) => {
+                            self.notify(format!("Cannot build the tape file: {e}"));
+                            return;
+                        }
+                    }
+                };
+                // A clean machine: the monitor must sit at its
+                // command prompt for the typed MGLD to land.
+                self.machine.reset();
+                self.frames_done = 0;
+                self.tape.tape.blocks.extend(blocks);
+                let file = self.tape.files().len() - 1;
+                // The monitor's load command, with our file number
+                // (0): MGLD 00. The tape session starts when the
+                // auto-typer's last key (the Enter of the command)
+                // goes down — the flash body would burn its waiting
+                // budget if it started during the boot.
+                use pmd85_core::keyboard::Key as key;
+                let mut script = vec![];
+                if *autostart && self.machine.bus.model == pmd85_core::Model::Pmd853 {
+                    // Monitor 3 keeps its stack at 0xBF00, out of the
+                    // autorun return slot's (0x7FFB) reach — but its
+                    // `JUMP FFF0` switches it into the 85-2
+                    // compatibility mode: a relocated copy at 0x8000
+                    // and a fresh boot, after which the whole 85-2
+                    // convention (the 7FFB slot, the reader at 8DC2)
+                    // holds verbatim. Switch first, then wait for the
+                    // compatibility boot before typing the load.
+                    script.extend(
+                        [
+                            key::J,
+                            key::U,
+                            key::M,
+                            key::P,
+                            key::Space,
+                            key::F,
+                            key::F,
+                            key::F,
+                            key::Digit0,
+                        ]
+                        .map(AutoTypeItem::Press),
+                    );
+                    script.push(AutoTypeItem::Press(key::Enter));
+                    script.push(AutoTypeItem::WaitPrompt);
+                }
+                script.extend(
+                    [
+                        key::M,
+                        key::G,
+                        key::L,
+                        key::D,
+                        key::Space,
+                        key::Digit0,
+                        key::Digit0,
+                        key::Enter,
+                    ]
+                    .map(AutoTypeItem::Press),
+                );
+                self.auto_type = Some(AutoType::new(&script, Some(file)));
+                self.set_running(true);
+            }
+            crate::project::Target::Bin => self.run_project_direct(),
+            crate::project::Target::RomModule => {
+                // The authentic module flow: build the image, plug it
+                // into the connector and reboot. The monitor BIOS
+                // detects the module and transfers the payload by
+                // itself; on the 85-1 it needs the `BASIC G` command
+                // instead (Monitor 1 has no boot-time detection).
+                let model = self.machine.bus.model;
+                let top = base.wrapping_add(image.len() as u16);
+                // The payload must live in the RAM below the
+                // monitors' boot-time stack (they run the header with
+                // return addresses just under 0x8000), and the image
+                // must fit the 32 KB module the connector addresses.
+                if top > 0x7FFB || base > top {
+                    self.notify(format!(
+                        "ROM module needs the program inside 0000h..7FFBh, but it spans {base:04X}..{top:04X}"
+                    ));
+                    return;
+                }
+                if image.len() + pmd85_core::module::HEADER_LEN > 0x8000 {
+                    self.notify("ROM module images are limited to 32 KB");
+                    return;
+                }
+                // On the 85-1 the header executes at RAM 0 (the BASIC
+                // transfer's first stage lands it there): the payload
+                // must not overwrite it mid-copy.
+                if model == pmd85_core::Model::Pmd851 && base < 0x10 {
+                    self.notify(
+                        "The 85-1's module transfer needs the program above 0010h (its header runs at RAM 0)",
+                    );
+                    return;
+                }
+                let entry = build
+                    .asm
+                    .entry
+                    .filter(|&e| (base..top).contains(&e))
+                    .unwrap_or(base);
+                let module = pmd85_core::module::make_rom_module(model, &image, base, entry);
+                self.machine.bus.memory.rom_module = Some(module);
+                self.machine.reset();
+                self.frames_done = 0;
+                if model == pmd85_core::Model::Pmd851 {
+                    use pmd85_core::keyboard::Key as key;
+                    self.auto_type = Some(AutoType::new(
+                        &[
+                            key::B,
+                            key::A,
+                            key::S,
+                            key::I,
+                            key::C,
+                            key::Space,
+                            key::G,
+                            key::Enter,
+                        ]
+                        .map(AutoTypeItem::Press),
+                        None,
+                    ));
+                }
+                self.set_running(true);
+                self.notify(format!("ROM module attached - booting from {entry:04X}"));
+            }
+        }
+    }
+
+    /// Run the project directly (Ctrl+F5): inject the built image
+    /// into RAM at its address and start the CPU at the entry point.
+    /// No monitor, no tape — the fast inner loop for development.
+    pub fn run_project_direct(&mut self) {
+        if !self.build_project() {
+            return;
+        }
+        let Some(project) = self.project.as_ref() else {
+            return;
+        };
+        let Some(build) = project.build.as_ref() else {
+            return;
+        };
+        let Some((base, image)) = build.asm.flat_image(0) else {
+            self.notify("Nothing was assembled: no code emitted");
+            return;
+        };
+        self.machine.reset();
+        self.frames_done = 0;
+        for (i, byte) in image.iter().enumerate() {
+            self.machine
+                .bus
+                .memory
+                .write(base.wrapping_add(i as u16), *byte);
+        }
+        let entry = build
+            .asm
+            .entry
+            .filter(|&e| (base..base.wrapping_add(image.len() as u16)).contains(&e))
+            .unwrap_or(base);
+        self.machine.cpu.pc = entry;
+        self.set_running(true);
+        self.notify(format!("Running from {:04X} (direct)", entry));
+    }
+
+    /// One render frame of the auto-typer: wait for the monitor's
+    /// command prompt, then hold each key a few frames (long enough
+    /// for the monitor's keyboard scan), release, gap, next key.
+    /// The tape session (if any) starts when the final key — the
+    /// Enter of the command — goes down: the monitor's MGLD dispatch
+    /// happens on that key press (after the key-release wait), so the
+    /// leader is already rolling by the time the ROM starts reading.
+    pub(crate) fn pump_auto_type(&mut self) {
+        let mut start_play = None;
+        {
+            let Some(auto) = self.auto_type.as_mut() else {
+                return;
+            };
+            if auto.waiting {
+                // The monitor's command loop cycles the keyboard
+                // scan column many times per frame; a change between
+                // consecutive frames means it is up and polling.
+                let scan = self.machine.bus.ppi_system_scan();
+                auto.scan_changes = if scan != auto.last_scan {
+                    auto.scan_changes.saturating_add(1)
+                } else {
+                    0
+                };
+                auto.last_scan = scan;
+                auto.waited += 1;
+                if auto.scan_changes >= AUTOTYPE_SCAN_FRAMES || auto.waited > AUTOTYPE_TIMEOUT {
+                    auto.waiting = false;
+                    auto.phase = AUTOTYPE_SETTLE;
+                } else {
+                    return;
+                }
+            }
+        }
+        let Some(auto) = self.auto_type.as_mut() else {
+            return;
+        };
+        if auto.phase > 0 {
+            auto.phase -= 1;
+            if auto.phase == 2 {
+                // Release before the gap so each press is a clean
+                // edge, not one long key-down.
+                if let Some(key) = auto.current.take() {
+                    self.machine.bus.keyboard.set_key(key, false);
+                }
+            }
+        } else if let Some(item) = auto.queue.pop_front() {
+            match item {
+                AutoTypeItem::Press(key) => {
+                    self.machine.bus.keyboard.set_key(key, true);
+                    auto.current = Some(key);
+                    auto.phase = 6;
+                    if auto.queue.is_empty() {
+                        // The last key (Enter) just went down: start
+                        // the tape now, so its leader plays while the
+                        // monitor finishes the key-release wait and
+                        // dispatches.
+                        start_play = auto.play_on_start.take();
+                    }
+                }
+                AutoTypeItem::WaitPrompt => {
+                    // The previous command reboots the machine (the
+                    // 85-3's compatibility switch): wait for its
+                    // prompt before typing the rest.
+                    auto.waiting = true;
+                    auto.waited = 0;
+                    auto.scan_changes = 0;
+                }
+            }
+        } else {
+            self.auto_type = None;
+        }
+        if let Some(file) = start_play {
+            self.play_tape_file(file);
+        }
+    }
+
     // ----- save states -------------------------------------------------
 
     /// Whether a save state can be taken right now: the cassette deck
@@ -891,7 +1345,9 @@ impl App {
     /// Where the dock layout lives: `layout.json` next to the
     /// persisted settings.
     pub(crate) fn layout_path(&self) -> Option<PathBuf> {
-        self.settings_dir.as_ref().map(|dir| dir.join("layout.json"))
+        self.settings_dir
+            .as_ref()
+            .map(|dir| dir.join("layout.json"))
     }
 
     /// Remember the dock layout: which panels are visible and where
@@ -1037,6 +1493,12 @@ impl App {
         }
         self.apply_joysticks();
 
+        // The project Run's auto-typed command: only while running
+        // (a paused machine would not scan the keyboard anyway).
+        if self.running {
+            self.pump_auto_type();
+        }
+
         let frames = if self.running {
             if self.speed.turbo {
                 let start = Instant::now();
@@ -1090,11 +1552,7 @@ impl App {
             vram::decode_into(&self.machine.bus.memory, self.profile, &mut self.decode_buf),
         );
         match &mut self.screen {
-            Some(tex) => tex.set_partial(
-                [0, 0],
-                image,
-                egui::TextureOptions::NEAREST,
-            ),
+            Some(tex) => tex.set_partial([0, 0], image, egui::TextureOptions::NEAREST),
             None => {
                 self.screen = Some(self.ctx.load_texture(
                     "pmd85-screen",
@@ -1208,9 +1666,10 @@ impl App {
 
     /// Emulated frames per second (averaged over the last second).
     pub fn emulated_fps(&self) -> f64 {
-        let (Some((t0, f0)), Some((t1, f1))) =
-            (self.frame_samples.front().copied(), self.frame_samples.back().copied())
-        else {
+        let (Some((t0, f0)), Some((t1, f1))) = (
+            self.frame_samples.front().copied(),
+            self.frame_samples.back().copied(),
+        ) else {
             return 0.0;
         };
         let frames = f1.saturating_sub(f0) as f64;

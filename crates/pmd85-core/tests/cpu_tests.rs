@@ -108,11 +108,19 @@ fn sub_aux_carry_means_no_borrow() {
     // MVI A,0x10 ; SUI 0x01: low nibble borrows -> AC clear
     let (cpu, _) = run(&[0x3E, 0x10, 0xD6, 0x01, 0x76]);
     assert_eq!(cpu.a, 0x0F);
-    assert!(!cpu.flags.ac, "AC should be clear on nibble borrow: {}", flags_of(&cpu));
+    assert!(
+        !cpu.flags.ac,
+        "AC should be clear on nibble borrow: {}",
+        flags_of(&cpu)
+    );
     // MVI A,0x12 ; SUI 0x01 -> 0x11, no borrow -> AC set
     let (cpu, _) = run(&[0x3E, 0x12, 0xD6, 0x01, 0x76]);
     assert_eq!(cpu.a, 0x11);
-    assert!(cpu.flags.ac, "AC should be set when no borrow: {}", flags_of(&cpu));
+    assert!(
+        cpu.flags.ac,
+        "AC should be set when no borrow: {}",
+        flags_of(&cpu)
+    );
 }
 
 #[test]
@@ -160,11 +168,19 @@ fn inr_dcr_aux_and_flags() {
     // MVI C,0x12 ; DCR C -> 0x11, AC set (no borrow from bit 3)
     let (cpu, _) = run(&[0x0E, 0x12, 0x0D, 0x76]);
     assert_eq!(cpu.c, 0x11);
-    assert!(cpu.flags.ac, "DCR sets AC when no borrow: {}", flags_of(&cpu));
+    assert!(
+        cpu.flags.ac,
+        "DCR sets AC when no borrow: {}",
+        flags_of(&cpu)
+    );
     // MVI C,0x00 ; DCR C -> 0xFF, AC clear (borrow from bit 3), Z clear
     let (cpu, _) = run(&[0x0E, 0x00, 0x0D, 0x76]);
     assert_eq!(cpu.c, 0xFF);
-    assert!(!cpu.flags.ac, "DCR clears AC on nibble borrow: {}", flags_of(&cpu));
+    assert!(
+        !cpu.flags.ac,
+        "DCR clears AC on nibble borrow: {}",
+        flags_of(&cpu)
+    );
     assert!(!cpu.flags.z);
     // MVI C,0x10 ; DCR C -> 0x0F, AC clear (borrow happened)
     let (cpu, _) = run(&[0x0E, 0x10, 0x0D, 0x76]);
@@ -238,9 +254,7 @@ fn parity_flag() {
 #[test]
 fn stack_operations() {
     // LXI SP,0x0100 ; MVI A,0x12 ; PUSH PSW ; POP B
-    let (cpu, bus) = run(&[
-        0x31, 0x00, 0x01, 0x3E, 0x12, 0xF5, 0xC1, 0x76,
-    ]);
+    let (cpu, bus) = run(&[0x31, 0x00, 0x01, 0x3E, 0x12, 0xF5, 0xC1, 0x76]);
     assert_eq!(cpu.b, 0x12);
     // PSW pushed at 0x00FE/0x00FF, bit 1 of the flags byte always set
     assert_eq!(bus.mem[0x00FF], 0x12);

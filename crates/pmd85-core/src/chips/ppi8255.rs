@@ -135,8 +135,16 @@ impl I8255 {
                 }
             }
             Port::C => {
-                let lower = if self.pc_lower_in { pc_in & 0x0F } else { self.outputs[2] & 0x0F };
-                let upper = if self.pc_upper_in { pc_in & 0xF0 } else { self.outputs[2] & 0xF0 };
+                let lower = if self.pc_lower_in {
+                    pc_in & 0x0F
+                } else {
+                    self.outputs[2] & 0x0F
+                };
+                let upper = if self.pc_upper_in {
+                    pc_in & 0xF0
+                } else {
+                    self.outputs[2] & 0xF0
+                };
                 lower | upper
             }
             Port::Control => 0xFF,

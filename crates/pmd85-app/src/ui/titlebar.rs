@@ -28,10 +28,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
         if let Some((rgba, width, height)) = crate::icon::icon_rgba() {
             let image =
                 egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], &rgba);
-            app.icon = Some(
-                app.ctx
-                    .load_texture("app-icon", image, egui::TextureOptions::default()),
-            );
+            app.icon = Some(app.ctx.load_texture(
+                "app-icon",
+                image,
+                egui::TextureOptions::default(),
+            ));
         }
     }
 
@@ -68,8 +69,11 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 // the buttons so they sit on top of it and take the
                 // clicks aimed at themselves.
                 let drag_rect = ui.available_rect_before_wrap();
-                let drag =
-                    ui.interact(drag_rect, ui.id().with("drag"), egui::Sense::click_and_drag());
+                let drag = ui.interact(
+                    drag_rect,
+                    ui.id().with("drag"),
+                    egui::Sense::click_and_drag(),
+                );
                 if drag.drag_started_by(egui::PointerButton::Primary) {
                     app.request_window(WindowRequest::Drag);
                 }
@@ -153,9 +157,7 @@ pub fn border(ui: &mut egui::Ui, app: &mut App) {
 /// The eight interactive regions of the resize border for a window
 /// `rect`: edges first, corners after — where they overlap, the
 /// corners (registered later) sit on top and take the pointer.
-fn regions(
-    rect: egui::Rect,
-) -> Vec<(ResizeDirection, egui::Rect, egui::CursorIcon)> {
+fn regions(rect: egui::Rect) -> Vec<(ResizeDirection, egui::Rect, egui::CursorIcon)> {
     let left = rect.left();
     let right = rect.right();
     let top = rect.top();
@@ -183,22 +185,34 @@ fn regions(
         ),
         (
             ResizeDirection::NorthWest,
-            egui::Rect::from_min_max(egui::pos2(left, top), egui::pos2(left + BORDER, top + BORDER)),
+            egui::Rect::from_min_max(
+                egui::pos2(left, top),
+                egui::pos2(left + BORDER, top + BORDER),
+            ),
             egui::CursorIcon::ResizeNorthWest,
         ),
         (
             ResizeDirection::NorthEast,
-            egui::Rect::from_min_max(egui::pos2(right - BORDER, top), egui::pos2(right, top + BORDER)),
+            egui::Rect::from_min_max(
+                egui::pos2(right - BORDER, top),
+                egui::pos2(right, top + BORDER),
+            ),
             egui::CursorIcon::ResizeNorthEast,
         ),
         (
             ResizeDirection::SouthWest,
-            egui::Rect::from_min_max(egui::pos2(left, bottom - BORDER), egui::pos2(left + BORDER, bottom)),
+            egui::Rect::from_min_max(
+                egui::pos2(left, bottom - BORDER),
+                egui::pos2(left + BORDER, bottom),
+            ),
             egui::CursorIcon::ResizeSouthWest,
         ),
         (
             ResizeDirection::SouthEast,
-            egui::Rect::from_min_max(egui::pos2(right - BORDER, bottom - BORDER), egui::pos2(right, bottom)),
+            egui::Rect::from_min_max(
+                egui::pos2(right - BORDER, bottom - BORDER),
+                egui::pos2(right, bottom),
+            ),
             egui::CursorIcon::ResizeSouthEast,
         ),
     ]

@@ -27,9 +27,21 @@ fn main() {
                 model = Model::from_str_loose(&args.next().expect("--model needs a value"))
                     .expect("unknown model");
             }
-            "--frames" => frames = args.next().expect("--frames needs a value").parse().unwrap(),
+            "--frames" => {
+                frames = args
+                    .next()
+                    .expect("--frames needs a value")
+                    .parse()
+                    .unwrap()
+            }
             "--press" => typed = args.next().expect("--press needs a value"),
-            "--settle" => settle = args.next().expect("--settle needs a value").parse().unwrap(),
+            "--settle" => {
+                settle = args
+                    .next()
+                    .expect("--settle needs a value")
+                    .parse()
+                    .unwrap()
+            }
             "--out" => out = args.next().expect("--out needs a value"),
             "--rom-module" => rom_module = Some(args.next().expect("--rom-module needs a value")),
             other => panic!("unknown argument {other}"),
@@ -205,15 +217,45 @@ fn token_to_key(tok: &str) -> Option<Key> {
 fn char_to_key(c: char) -> Option<Key> {
     use Key::*;
     Some(match c.to_ascii_uppercase() {
-        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E, 'F' => F, 'G' => G,
-        'H' => H, 'I' => I, 'J' => J, 'K' => K, 'L' => L, 'M' => M, 'N' => N,
-        'O' => O, 'P' => P, 'Q' => Q, 'R' => R, 'S' => S, 'T' => T, 'U' => U,
-        'V' => V, 'W' => W, 'X' => X, 'Y' => Y, 'Z' => Z,
-        '0' => Digit0, '1' => Digit1, '2' => Digit2, '3' => Digit3, '4' => Digit4,
-        '5' => Digit5, '6' => Digit6, '7' => Digit7, '8' => Digit8, '9' => Digit9,
+        'A' => A,
+        'B' => B,
+        'C' => C,
+        'D' => D,
+        'E' => E,
+        'F' => F,
+        'G' => G,
+        'H' => H,
+        'I' => I,
+        'J' => J,
+        'K' => K,
+        'L' => L,
+        'M' => M,
+        'N' => N,
+        'O' => O,
+        'P' => P,
+        'Q' => Q,
+        'R' => R,
+        'S' => S,
+        'T' => T,
+        'U' => U,
+        'V' => V,
+        'W' => W,
+        'X' => X,
+        'Y' => Y,
+        'Z' => Z,
+        '0' => Digit0,
+        '1' => Digit1,
+        '2' => Digit2,
+        '3' => Digit3,
+        '4' => Digit4,
+        '5' => Digit5,
+        '6' => Digit6,
+        '7' => Digit7,
+        '8' => Digit8,
+        '9' => Digit9,
         ' ' => Space,
         '\n' | '\r' => Enter,
-        '+' => Semicolon,   // shifted ; is + on the PMD layout... unshifted below
+        '+' => Semicolon, // shifted ; is + on the PMD layout... unshifted below
         '-' => Minus,
         '.' => Period,
         ',' => Comma,

@@ -129,7 +129,10 @@ impl Cpu {
     }
 
     /// Restore the CPU state written by [`Cpu::save_state`].
-    pub(crate) fn load_state(&mut self, r: &mut crate::state::StateReader) -> Result<(), crate::state::StateError> {
+    pub(crate) fn load_state(
+        &mut self,
+        r: &mut crate::state::StateReader,
+    ) -> Result<(), crate::state::StateError> {
         self.a = r.u8()?;
         self.b = r.u8()?;
         self.c = r.u8()?;
@@ -772,14 +775,14 @@ impl Cpu {
 
     fn condition(opcode: u8) -> impl Fn(&Cpu) -> bool {
         move |cpu: &Cpu| match (opcode >> 3) & 0x07 {
-            0 => !cpu.flags.z, // NZ
-            1 => cpu.flags.z,  // Z
+            0 => !cpu.flags.z,  // NZ
+            1 => cpu.flags.z,   // Z
             2 => !cpu.flags.cy, // NC
-            3 => cpu.flags.cy, // C
-            4 => !cpu.flags.p, // PO
-            5 => cpu.flags.p,  // PE
-            6 => !cpu.flags.s, // P
-            _ => cpu.flags.s,  // M
+            3 => cpu.flags.cy,  // C
+            4 => !cpu.flags.p,  // PO
+            5 => cpu.flags.p,   // PE
+            6 => !cpu.flags.s,  // P
+            _ => cpu.flags.s,   // M
         }
     }
 

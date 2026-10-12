@@ -230,9 +230,7 @@ impl Memory {
                 // Video RAM mirror #1
                 0x4000..=0x7FFF => self.ram[0xC000 + (addr - 0x4000)] = data,
                 // RAM #2 / RAM #3 / Video RAM
-                0x9000..=0x9FFF | 0xB000..=0xBFFF | 0xC000..=0xFFFF => {
-                    self.ram[addr] = data
-                }
+                0x9000..=0x9FFF | 0xB000..=0xBFFF | 0xC000..=0xFFFF => self.ram[addr] = data,
                 // ROM areas and unmapped holes are not writable
                 _ => {}
             }

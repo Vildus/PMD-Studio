@@ -36,7 +36,10 @@ pub const SPEED_MAX: f64 = 50.0;
 /// fast-forward the machine in one giant burst; beyond the bound the
 /// pacer resynchronizes to `now`.
 pub fn frames_due(now: f64, next_due: f64, multiplier: f64) -> (u32, f64) {
-    assert!(multiplier.is_finite() && multiplier > 0.0, "bad multiplier {multiplier}");
+    assert!(
+        multiplier.is_finite() && multiplier > 0.0,
+        "bad multiplier {multiplier}"
+    );
     let period = FRAME_PERIOD_SECS / multiplier;
     let mut frames: u32 = 0;
     let mut due = next_due;

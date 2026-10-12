@@ -29,9 +29,9 @@ fn keys_for(code: KeyCode) -> &'static [Key] {
         KeyCode::KeyI => &[I],
         KeyCode::KeyO => &[O],
         KeyCode::KeyP => &[P],
-        KeyCode::BracketLeft => &[OpenBracket],  // @ `
+        KeyCode::BracketLeft => &[OpenBracket],   // @ `
         KeyCode::BracketRight => &[CloseBracket], // \ ^
-        KeyCode::Backslash => &[Backslash],      // [ ]
+        KeyCode::Backslash => &[Backslash],       // [ ]
 
         // A row.
         KeyCode::KeyA => &[A],
@@ -69,7 +69,7 @@ fn keys_for(code: KeyCode) -> &'static [Key] {
         KeyCode::Digit8 => &[Digit8],
         KeyCode::Digit9 => &[Digit9],
         KeyCode::Digit0 => &[Digit0],
-        KeyCode::Minus => &[Minus],   // _ =
+        KeyCode::Minus => &[Minus],  // _ =
         KeyCode::Equal => &[Equals], // { }
 
         KeyCode::Space => &[Space],
@@ -91,7 +91,7 @@ fn keys_for(code: KeyCode) -> &'static [Key] {
         KeyCode::ArrowDown => &[CursorDown], // the END key
         KeyCode::ArrowRight => &[CursorRight],
         KeyCode::Home => &[LineStart], // |<-
-        KeyCode::End => &[LineEnd],   // ->|
+        KeyCode::End => &[LineEnd],    // ->|
 
         // F1..F12 -> K0..K11 function keys.
         KeyCode::F1 => &[K0],
@@ -120,9 +120,9 @@ fn keys_for(code: KeyCode) -> &'static [Key] {
         KeyCode::Numpad9 => &[Digit9],
         KeyCode::NumpadDecimal => &[Period],
         KeyCode::NumpadDivide => &[Slash],
-        KeyCode::NumpadMultiply => &[Shift, Quote],    // *
-        KeyCode::NumpadAdd => &[Shift, Semicolon],     // +
-        KeyCode::NumpadSubtract => &[Shift, Digit0],  // -
+        KeyCode::NumpadMultiply => &[Shift, Quote],  // *
+        KeyCode::NumpadAdd => &[Shift, Semicolon],   // +
+        KeyCode::NumpadSubtract => &[Shift, Digit0], // -
 
         _ => &[],
     }
@@ -215,7 +215,10 @@ mod tests {
     fn numpad_operators_press_shift_combos() {
         // + is SHIFT + the `; +` key, - SHIFT + `0`, * SHIFT + `: *`.
         assert_eq!(keys_for(KeyCode::NumpadAdd), &[Key::Shift, Key::Semicolon]);
-        assert_eq!(keys_for(KeyCode::NumpadSubtract), &[Key::Shift, Key::Digit0]);
+        assert_eq!(
+            keys_for(KeyCode::NumpadSubtract),
+            &[Key::Shift, Key::Digit0]
+        );
         assert_eq!(keys_for(KeyCode::NumpadMultiply), &[Key::Shift, Key::Quote]);
     }
 
@@ -240,8 +243,14 @@ mod tests {
         assert_eq!(host_shortcut(KeyCode::F5), Some(HostShortcut::QuickSave));
         assert_eq!(host_shortcut(KeyCode::F9), Some(HostShortcut::QuickLoad));
         assert_eq!(host_shortcut(KeyCode::F10), Some(HostShortcut::DebugStep));
-        assert_eq!(host_shortcut(KeyCode::F11), Some(HostShortcut::DebugStepOver));
-        assert_eq!(host_shortcut(KeyCode::F12), Some(HostShortcut::DebugContinue));
+        assert_eq!(
+            host_shortcut(KeyCode::F11),
+            Some(HostShortcut::DebugStepOver)
+        );
+        assert_eq!(
+            host_shortcut(KeyCode::F12),
+            Some(HostShortcut::DebugContinue)
+        );
         assert_eq!(host_shortcut(KeyCode::F4), None);
         assert_eq!(host_shortcut(KeyCode::KeyS), None);
     }

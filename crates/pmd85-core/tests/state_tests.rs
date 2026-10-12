@@ -56,7 +56,15 @@ fn restore_continues_deterministically() {
     }
     type_command(
         &mut a,
-        &[Key::M, Key::G, Key::L, Key::D, Key::Space, Key::Digit0, Key::Digit0],
+        &[
+            Key::M,
+            Key::G,
+            Key::L,
+            Key::D,
+            Key::Space,
+            Key::Digit0,
+            Key::Digit0,
+        ],
     );
     a.bus.keyboard.set_key(Key::Space, true);
     for _ in 0..25 {
@@ -74,7 +82,10 @@ fn restore_continues_deterministically() {
     assert_eq!(b.cpu.flags.pack(), a.cpu.flags.pack());
     assert_eq!(b.bus.total_cycles(), a.bus.total_cycles());
     assert!(b.bus.keyboard.is_pressed(Key::Space), "held key survived");
-    assert_eq!(&b.bus.memory.ram[0x3000..0x3040], &a.bus.memory.ram[0x3000..0x3040]);
+    assert_eq!(
+        &b.bus.memory.ram[0x3000..0x3040],
+        &a.bus.memory.ram[0x3000..0x3040]
+    );
 
     // And both develop identically from there.
     for _ in 0..200 {
@@ -111,7 +122,15 @@ fn save_state_refuses_while_the_tape_runs() {
     let mut machine = boot();
     type_command(
         &mut machine,
-        &[Key::M, Key::G, Key::L, Key::D, Key::Space, Key::Digit0, Key::Digit0],
+        &[
+            Key::M,
+            Key::G,
+            Key::L,
+            Key::D,
+            Key::Space,
+            Key::Digit0,
+            Key::Digit0,
+        ],
     );
     machine.bus.tape_play_session(vec![PlayItem {
         data: vec![0xFF; 256],
@@ -131,16 +150,33 @@ fn save_state_refuses_while_the_tape_runs() {
     type_command(
         &mut machine,
         &[
-            Key::M, Key::G, Key::S, Key::V, Key::Space, Key::Digit0, Key::Digit0,
-            Key::Space, Key::Digit2, Key::Digit0, Key::Digit0, Key::Digit0,
-            Key::Space, Key::Digit2, Key::Digit0, Key::Digit1, Key::Digit0,
+            Key::M,
+            Key::G,
+            Key::S,
+            Key::V,
+            Key::Space,
+            Key::Digit0,
+            Key::Digit0,
+            Key::Space,
+            Key::Digit2,
+            Key::Digit0,
+            Key::Digit0,
+            Key::Digit0,
+            Key::Space,
+            Key::Digit2,
+            Key::Digit0,
+            Key::Digit1,
+            Key::Digit0,
             Key::Enter,
         ],
     );
     for _ in 0..250 {
         machine.step_frame();
     }
-    assert!(machine.bus.tape.is_recording(), "the recorder should be running");
+    assert!(
+        machine.bus.tape.is_recording(),
+        "the recorder should be running"
+    );
     assert_eq!(machine.save_state(), Err(StateError::TapeBusy));
 }
 
@@ -154,7 +190,10 @@ fn restore_rejects_bad_data() {
     // Not a state at all.
     let mut other = boot();
     assert_eq!(other.restore_state(b""), Err(StateError::UnexpectedEof));
-    assert_eq!(other.restore_state(b"NOTASTATE........"), Err(StateError::BadMagic));
+    assert_eq!(
+        other.restore_state(b"NOTASTATE........"),
+        Err(StateError::BadMagic)
+    );
 
     // Wrong version.
     let mut bad_version = good.clone();
@@ -166,12 +205,18 @@ fn restore_rejects_bad_data() {
 
     // Truncated in the middle of the RAM image.
     let truncated = &good[..good.len() / 2];
-    assert_eq!(other.restore_state(truncated), Err(StateError::UnexpectedEof));
+    assert_eq!(
+        other.restore_state(truncated),
+        Err(StateError::UnexpectedEof)
+    );
 
     // Trailing garbage.
     let mut trailing = good.clone();
     trailing.push(0);
-    assert_eq!(other.restore_state(&trailing), Err(StateError::TrailingBytes));
+    assert_eq!(
+        other.restore_state(&trailing),
+        Err(StateError::TrailingBytes)
+    );
 
     // A failed load never half-mutated the machine.
     assert_eq!(other.cpu.pc, machine.cpu.pc);
@@ -197,12 +242,18 @@ fn restore_rejects_foreign_machines() {
     let mut flipped = monitor();
     flipped[0x100] ^= 0xFF;
     let mut m3 = Machine::new(Model::Pmd853, &flipped, None);
-    assert_eq!(m3.restore_state(&snapshot), Err(StateError::MonitorMismatch));
+    assert_eq!(
+        m3.restore_state(&snapshot),
+        Err(StateError::MonitorMismatch)
+    );
 
     // The unknown model tag of a future format.
     let mut unknown = snapshot.clone();
     unknown[8] = 0x7F;
-    assert_eq!(machine.restore_state(&unknown), Err(StateError::ModelMismatch));
+    assert_eq!(
+        machine.restore_state(&unknown),
+        Err(StateError::ModelMismatch)
+    );
 }
 
 /// The header layout is pinned: magic, version, model tag, monitor
@@ -212,7 +263,10 @@ fn snapshot_header_is_stable() {
     let machine = boot();
     let snapshot = machine.save_state().unwrap();
     assert_eq!(&snapshot[0..4], b"PMDS");
-    assert_eq!(u32::from_le_bytes([snapshot[4], snapshot[5], snapshot[6], snapshot[7]]), 1);
+    assert_eq!(
+        u32::from_le_bytes([snapshot[4], snapshot[5], snapshot[6], snapshot[7]]),
+        1
+    );
     assert_eq!(snapshot[8], 4, "model tag for PMD 85-3");
     // Monitor 3: 8 KiB, CRC of its first byte lives at offset 11.
     assert_eq!(u16::from_le_bytes([snapshot[9], snapshot[10]]), 0x2000);

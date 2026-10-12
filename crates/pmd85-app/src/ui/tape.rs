@@ -130,10 +130,7 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, _theme: &Theme) {
         {
             let selected = app.tape.selected;
             let file_name = export_file_name(app, selected);
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name(file_name)
-                .save_file()
-            {
+            if let Some(path) = rfd::FileDialog::new().set_file_name(file_name).save_file() {
                 if let Some(content) = selected.and_then(|s| app.tape.export_file(s)) {
                     if let Err(e) = std::fs::write(&path, content) {
                         app.notify(format!("Tape: {}: {e}", path.display()));
@@ -148,8 +145,7 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, _theme: &Theme) {
         // ---- playback ----
         let playing = app.tape.is_playing();
         let file_count = app.tape.files().len();
-        let play_enabled =
-            playing || app.tape.selected.is_some_and(|s| s < file_count);
+        let play_enabled = playing || app.tape.selected.is_some_and(|s| s < file_count);
         let play_label = if playing {
             format!("{} Stop", icon::STOP)
         } else {
@@ -373,18 +369,16 @@ fn file_list(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
                             .as_ref()
                             .map(|h| fmt_number(h.number))
                             .unwrap_or_else(|| "\u{2014}".into());
-                        ui.label(
-                            egui::RichText::new(number).size(12.0).monospace(),
-                        )
-                        .on_hover_text(format!(
-                            "file {file_no}, block {} \u{2014} load with MGLD {}",
-                            file.block,
-                            block
-                                .header
-                                .as_ref()
-                                .map(|h| fmt_number(h.number))
-                                .unwrap_or_else(|| "?".into())
-                        ));
+                        ui.label(egui::RichText::new(number).size(12.0).monospace())
+                            .on_hover_text(format!(
+                                "file {file_no}, block {} \u{2014} load with MGLD {}",
+                                file.block,
+                                block
+                                    .header
+                                    .as_ref()
+                                    .map(|h| fmt_number(h.number))
+                                    .unwrap_or_else(|| "?".into())
+                            ));
                         ui.label(
                             egui::RichText::new(format!("@{}", offsets[file.block]))
                                 .size(11.0)
@@ -523,9 +517,9 @@ fn status(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
                 0.0
             };
             ui.add(
-                egui::ProgressBar::new(frac).show_percentage().text(format!(
-                    "feeding block\u{2026} {done}/{total} bytes"
-                )),
+                egui::ProgressBar::new(frac)
+                    .show_percentage()
+                    .text(format!("feeding block\u{2026} {done}/{total} bytes")),
             );
         }
     });

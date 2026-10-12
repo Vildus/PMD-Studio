@@ -136,9 +136,7 @@ impl TapeBlock {
     /// byte). For headerless blocks, the payload as-is.
     pub fn content(&self) -> &[u8] {
         match self.header {
-            Some(_) if !self.body_bytes.is_empty() => {
-                &self.body_bytes[..self.body_bytes.len() - 1]
-            }
+            Some(_) if !self.body_bytes.is_empty() => &self.body_bytes[..self.body_bytes.len() - 1],
             _ => &self.body_bytes,
         }
     }
@@ -160,7 +158,11 @@ impl TapeBlock {
     /// (leader tones and the 1200-baud byte transfer, see `tapedeck`).
     pub fn duration_secs(&self) -> f64 {
         let bytes = (self.header_bytes.len() + self.body_bytes.len()) as f64;
-        let leaders = if self.header.is_some() { 2.8 + 0.5 } else { 0.5 };
+        let leaders = if self.header.is_some() {
+            2.8 + 0.5
+        } else {
+            0.5
+        };
         leaders + 0.2 + bytes * (22.0 / 2400.0)
     }
 }
@@ -214,6 +216,86 @@ pub fn make_file(
     };
     block.fix_crcs();
     Ok(block)
+}
+
+/// Build a headerless continuation block carrying raw content — the
+/// second block of an autorun file (see [`autorun_loader`]).
+pub fn make_continuation(content: &[u8]) -> TapeBlock {
+    let mut body_bytes = content.to_vec();
+    body_bytes.push(0); // checksum placeholder
+    let mut block = TapeBlock {
+        header: None,
+        header_bytes: Vec::new(),
+        body_bytes,
+        header_crc_ok: true,
+        body_crc_ok: true,
+        body_length_error: None,
+        old_format: false,
+    };
+    block.fix_crcs();
+    block
+}
+
+/// The tape "autorun" trick (see https://pmd85.borik.net/wiki/Autorun):
+/// a small loader saved at 0x7FD7 whose last word overwrites the
+/// monitor block reader's return slot at 0x7FFB. When `MGLD` loads the
+/// block, the reader's `RET` (at 8DE1/EDE1, or the flash intercept's
+/// equivalent) pops the loader's start address instead of returning to
+/// the command handler; the loader then loads the program block
+/// through the monitor's own `BLKLOAD` entry and jumps to `entry`
+/// (a plain tape file jumps to its load address; an IDE build knows
+/// better).
+///
+/// On the 85-3, Monitor 3's stack lives at 0xBF00 — beyond the 7FFB
+/// slot — so the loader uses the entry points of the monitor's 85-2
+/// compatibility mode (entered with `JUMP FFF0`, which copies it to
+/// 0x8000, reboots and restores the 85-2 stack layout). The caller
+/// must switch the machine to that mode before loading.
+///
+/// `prg_len` is the program size in bytes; the loader passes
+/// `prg_len - 1` to the reader, whose length register counts
+/// `value + 1` bytes.
+pub fn autorun_loader(
+    model: crate::model::Model,
+    load_addr: u16,
+    entry: u16,
+    prg_len: u16,
+) -> Vec<u8> {
+    // Monitor entry points: the block reader (BLKLOAD) and the
+    // warm-start/error return the loader jumps to on a failed load.
+    let (blkload, err): (u16, u16) = match model {
+        crate::model::Model::Pmd851 => (0x8DC2, 0x8A89),
+        // 85-2/85-2A, and the 85-3's compatibility-mode copy.
+        crate::model::Model::Pmd852
+        | crate::model::Model::Pmd852a
+        | crate::model::Model::Pmd853 => (0x8DC2, 0x8C40),
+    };
+    const LDRSTART: u16 = 0x7FD7;
+    let mut loader = Vec::with_capacity(38);
+    let word = |v: &mut Vec<u8>, w: u16| v.extend_from_slice(&w.to_le_bytes());
+    loader.push(0xDA); // JC err
+    word(&mut loader, err);
+    loader.push(0xC2); // JNZ err
+    word(&mut loader, err);
+    loader.push(0x21); // LXI H,load_addr
+    word(&mut loader, load_addr);
+    loader.push(0x11); // LXI D,prg_len-1
+    word(&mut loader, prg_len.wrapping_sub(1));
+    loader.push(0xCD); // CALL blkload
+    word(&mut loader, blkload);
+    loader.push(0xDA); // JC err
+    word(&mut loader, err);
+    loader.push(0xC2); // JNZ err
+    word(&mut loader, err);
+    loader.push(0xC3); // JMP entry
+    word(&mut loader, entry);
+    debug_assert_eq!(loader.len(), 24);
+    loader.extend_from_slice(&[0; 12]); // stack space (see the wiki)
+                                        // The DW LDRSTART: overwrites the reader's return slot at
+                                        // 0x7FFB, so its RET lands on the loader's first instruction.
+    loader.extend_from_slice(&LDRSTART.to_le_bytes());
+    debug_assert_eq!(loader.len(), 38);
+    loader
 }
 
 /// A parsed tape image.
@@ -298,8 +380,9 @@ impl Tape {
 
                 let body_crc_ok = match mismatch {
                     None => {
-                        take > 0 && crc8(&bytes[body_off..body_off + take - 1])
-                            == bytes[body_off + take - 1]
+                        take > 0
+                            && crc8(&bytes[body_off..body_off + take - 1])
+                                == bytes[body_off + take - 1]
                     }
                     Some(_) => true, // unverifiable: unknown split of data/checksum
                 };
@@ -435,6 +518,72 @@ mod tests {
         assert_eq!(&HEADER_LEADER[0..16], &[0xFF; 16]);
         assert_eq!(&HEADER_LEADER[16..32], &[0x00; 16]);
         assert_eq!(&HEADER_LEADER[32..48], &[0x55; 16]);
+    }
+
+    #[test]
+    fn autorun_loader_matches_the_wiki_layout() {
+        let loader = autorun_loader(crate::model::Model::Pmd852a, 0x1500, 0x1500, 0x2000);
+        assert_eq!(loader.len(), 38);
+        // JC 8C40 / JNZ 8C40 (the 85-2 warm-start error return).
+        assert_eq!(&loader[0..6], &[0xDA, 0x40, 0x8C, 0xC2, 0x40, 0x8C]);
+        // LXI H,1500 ; LXI D,1FFF ; CALL 8DC2.
+        assert_eq!(
+            &loader[6..15],
+            &[0x21, 0x00, 0x15, 0x11, 0xFF, 0x1F, 0xCD, 0xC2, 0x8D]
+        );
+        // JC / JNZ err, then JMP 1500.
+        assert_eq!(
+            &loader[15..24],
+            &[0xDA, 0x40, 0x8C, 0xC2, 0x40, 0x8C, 0xC3, 0x00, 0x15]
+        );
+        // 12 bytes of stack space, then DW 7FD7 at 0x7FFB/0x7FFC.
+        assert_eq!(&loader[24..36], &[0; 12]);
+        assert_eq!(&loader[36..38], &[0xD7, 0x7F]);
+    }
+
+    #[test]
+    fn autorun_loader_can_jump_to_its_own_entry() {
+        // The JMP target may differ from the load address (an IDE
+        // build knows its entry point).
+        let loader = autorun_loader(crate::model::Model::Pmd853, 0x1000, 0x1024, 0x40);
+        assert_eq!(&loader[6..9], &[0x21, 0x00, 0x10]); // LXI H,1000
+        assert_eq!(&loader[21..24], &[0xC3, 0x24, 0x10]); // JMP 1024
+    }
+
+    #[test]
+    fn autorun_loader_per_model_entry_points() {
+        // 85-1: BLKLOAD 8DC2, error return 8A89.
+        let l = autorun_loader(crate::model::Model::Pmd851, 0x1000, 0x1000, 0x40);
+        assert_eq!(&l[0..3], &[0xDA, 0x89, 0x8A]);
+        assert_eq!(&l[12..15], &[0xCD, 0xC2, 0x8D]);
+        // 85-2, 85-2A and the 85-3 (through its compatibility-mode
+        // copy): identical, the monitors share the layout.
+        assert_eq!(
+            autorun_loader(crate::model::Model::Pmd852, 0x1000, 0x1000, 0x40),
+            autorun_loader(crate::model::Model::Pmd852a, 0x1000, 0x1000, 0x40)
+        );
+        assert_eq!(
+            autorun_loader(crate::model::Model::Pmd852, 0x1000, 0x1000, 0x40),
+            autorun_loader(crate::model::Model::Pmd853, 0x1000, 0x1000, 0x40)
+        );
+        let l = autorun_loader(crate::model::Model::Pmd853, 0x1000, 0x1000, 0x40);
+        assert_eq!(&l[0..3], &[0xDA, 0x40, 0x8C]);
+        assert_eq!(&l[12..15], &[0xCD, 0xC2, 0x8D]);
+    }
+
+    #[test]
+    fn continuation_block_is_headerless_with_checksum() {
+        let block = make_continuation(&[1, 2, 3]);
+        assert!(block.header.is_none());
+        assert!(block.header_bytes.is_empty());
+        assert_eq!(block.body_bytes, vec![1, 2, 3, 6]);
+        assert!(block.body_crc_ok);
+        // It groups as a continuation when parsed after a file block.
+        let file = file_block(0, "F", 0x1000, &[9]);
+        let tape = Tape::parse(&serialize(&[file, block]));
+        assert_eq!(tape.blocks.len(), 2);
+        assert!(tape.blocks[1].header.is_none());
+        assert_eq!(tape.blocks[1].body_bytes, vec![1, 2, 3, 6]);
     }
 
     #[test]

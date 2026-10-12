@@ -8,6 +8,8 @@ pub mod debug;
 pub mod dock;
 pub mod joystick;
 pub mod keyboard;
+pub mod problems;
+pub mod project;
 pub mod screen;
 pub mod settings;
 pub mod status;
@@ -47,6 +49,9 @@ pub struct UiState {
     /// (released when the pointer button goes up). Merged with the
     /// gamepad state each frame by [`crate::app::App::advance`].
     pub mouse_joystick: Option<(usize, pmd85_core::joystick::Button)>,
+    /// A jump the editor applies on its next draw (set by the
+    /// Problems tab, among others).
+    pub project_jump: Option<crate::ui::project::Jump>,
 }
 
 impl Default for UiState {
@@ -62,6 +67,7 @@ impl Default for UiState {
             mouse_key: None,
             mouse_rst: false,
             mouse_joystick: None,
+            project_jump: None,
         }
     }
 }
@@ -148,6 +154,18 @@ mod tests {
         app
     }
 
+    /// A fresh scratch project (manifest + template main.asm) for
+    /// the project-tab cases; its build runs clean.
+    fn test_project(name: &str) -> crate::project::Project {
+        let dir =
+            std::env::temp_dir().join(format!("pmd85-ui-project-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let project = crate::project::Project::create(&dir, name).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        project
+    }
+
     /// The UI must build a full frame without panicking in every
     /// interesting state.
     #[test]
@@ -161,33 +179,25 @@ mod tests {
                     a.set_turbo(true);
                 }),
             ),
-            (
-                "slow",
-                Box::new(|a| a.set_multiplier(0.25)),
-            ),
-            (
-                "fast",
-                Box::new(|a| a.set_multiplier(10.0)),
-            ),
-            (
-                "settings-open",
-                Box::new(|a| a.ui.settings_open = true),
-            ),
+            ("slow", Box::new(|a| a.set_multiplier(0.25))),
+            ("fast", Box::new(|a| a.set_multiplier(10.0))),
+            ("settings-open", Box::new(|a| a.ui.settings_open = true)),
             (
                 "titlebar-off",
                 Box::new(|a| a.settings.custom_titlebar = false),
             ),
-            (
-                "maximized",
-                Box::new(|a| a.window_maximized = true),
-            ),
+            ("maximized", Box::new(|a| a.window_maximized = true)),
             (
                 "keyboard-open",
-                Box::new(|a| crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Keyboard)),
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Keyboard)
+                }),
             ),
             (
                 "joystick-open",
-                Box::new(|a| crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Joystick)),
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Joystick)
+                }),
             ),
             (
                 "settings-changed",
@@ -203,14 +213,8 @@ mod tests {
                     a.ui.confirm_reboot = Some(a.pending_config.clone());
                 }),
             ),
-            (
-                "muted",
-                Box::new(|a| a.set_mute(true)),
-            ),
-            (
-                "error-notification",
-                Box::new(|a| a.notify("test error")),
-            ),
+            ("muted", Box::new(|a| a.set_mute(true))),
+            ("error-notification", Box::new(|a| a.notify("test error"))),
             (
                 "tape-open",
                 Box::new(|a| crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Tape)),
@@ -219,14 +223,9 @@ mod tests {
                 "tape-with-file",
                 Box::new(|a| {
                     crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Tape);
-                    let block = pmd85_core::tape::make_file(
-                        0,
-                        b'?',
-                        "TESTFILE",
-                        0x1000,
-                        &[1u8, 2, 3, 4],
-                    )
-                    .unwrap();
+                    let block =
+                        pmd85_core::tape::make_file(0, b'?', "TESTFILE", 0x1000, &[1u8, 2, 3, 4])
+                            .unwrap();
                     a.tape.tape.blocks.push(block);
                     a.tape.selected = Some(0);
                 }),
@@ -236,14 +235,9 @@ mod tests {
                 Box::new(|a| {
                     crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Tape);
                     a.tape.flash = false;
-                    let block = pmd85_core::tape::make_file(
-                        0,
-                        b'?',
-                        "TESTFILE",
-                        0x1000,
-                        &[1u8, 2, 3, 4],
-                    )
-                    .unwrap();
+                    let block =
+                        pmd85_core::tape::make_file(0, b'?', "TESTFILE", 0x1000, &[1u8, 2, 3, 4])
+                            .unwrap();
                     a.tape.tape.blocks.push(block);
                     a.play_tape_file(0);
                 }),
@@ -252,14 +246,9 @@ mod tests {
                 "tape-flash-loading",
                 Box::new(|a| {
                     crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Tape);
-                    let block = pmd85_core::tape::make_file(
-                        0,
-                        b'?',
-                        "TESTFILE",
-                        0x1000,
-                        &[1u8, 2, 3, 4],
-                    )
-                    .unwrap();
+                    let block =
+                        pmd85_core::tape::make_file(0, b'?', "TESTFILE", 0x1000, &[1u8, 2, 3, 4])
+                            .unwrap();
                     a.tape.tape.blocks.push(block);
                     a.play_tape_file(0);
                 }),
@@ -268,14 +257,9 @@ mod tests {
                 "tape-import-form",
                 Box::new(|a| {
                     crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Tape);
-                    let block = pmd85_core::tape::make_file(
-                        0,
-                        b'?',
-                        "TESTFILE",
-                        0x1000,
-                        &[1u8, 2, 3, 4],
-                    )
-                    .unwrap();
+                    let block =
+                        pmd85_core::tape::make_file(0, b'?', "TESTFILE", 0x1000, &[1u8, 2, 3, 4])
+                            .unwrap();
                     a.tape.tape.blocks.push(block);
                     a.ui.tape_import = Some(crate::ui::tape::ImportDraft {
                         path: "raw.bin".into(),
@@ -289,10 +273,7 @@ mod tests {
             (
                 "debugger-open",
                 Box::new(|a| {
-                    for tab in [
-                        crate::ui::dock::Tab::Debugger,
-                        crate::ui::dock::Tab::Memory,
-                    ] {
+                    for tab in [crate::ui::dock::Tab::Debugger, crate::ui::dock::Tab::Memory] {
                         crate::ui::dock::show_tab(&mut a.ui.dock, tab);
                     }
                 }),
@@ -300,10 +281,7 @@ mod tests {
             (
                 "debugger-at-breakpoint",
                 Box::new(|a| {
-                    for tab in [
-                        crate::ui::dock::Tab::Debugger,
-                        crate::ui::dock::Tab::Memory,
-                    ] {
+                    for tab in [crate::ui::dock::Tab::Debugger, crate::ui::dock::Tab::Memory] {
                         crate::ui::dock::show_tab(&mut a.ui.dock, tab);
                     }
                     // Stop the monitor somewhere in its boot.
@@ -335,6 +313,66 @@ mod tests {
                     a.ui.debug.offset = 1000;
                 }),
             ),
+            (
+                "project-empty",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                }),
+            ),
+            (
+                "project-open",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    a.project = Some(test_project("open"));
+                }),
+            ),
+            (
+                "project-with-problems",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Problems);
+                    let mut p = test_project("errs");
+                    let main = p.files.iter().position(|f| f.path == "main.asm").unwrap();
+                    p.files[main].text = "MVI A,MISSING\n".to_string();
+                    p.build = Some(p.build());
+                    // And a pending jump for the editor to apply.
+                    a.ui.project_jump = Some(crate::ui::project::Jump {
+                        file: "main.asm".into(),
+                        line: 1,
+                        col: 5,
+                    });
+                    a.project = Some(p);
+                }),
+            ),
+            (
+                "project-find-and-goto",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    let mut p = test_project("find");
+                    p.find.open = true;
+                    p.find.query = "MVI".into();
+                    p.goto_open = true;
+                    a.project = Some(p);
+                }),
+            ),
+            (
+                "project-target-edit",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    let mut p = test_project("target");
+                    p.target_open = true;
+                    p.find.open = true;
+                    a.project = Some(p);
+                }),
+            ),
+            (
+                "project-running",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    a.project = Some(test_project("run"));
+                    a.run_project();
+                }),
+            ),
         ];
         for (name, setup) in cases {
             let mut app = test_app();
@@ -358,6 +396,89 @@ mod tests {
         assert!(app.machine.bus.total_cycles() > before);
         assert!(app.frames_done >= 1);
         assert!(app.screen.is_some(), "screen texture created");
+    }
+
+    /// F5 end to end, against every model's real monitor ROM: the
+    /// built program becomes an autorun tape file (the loader block
+    /// at 0x7FD7 plus the program continuation), the machine resets
+    /// and boots, the app types the monitor's `MGLD 00`, the monitor
+    /// loads both blocks with the checksums for real, the loader
+    /// hijacks the reader's return slot and the template program
+    /// fills video RAM and halts. On the 85-3 the flow first types
+    /// `JUMP FFF0`, switching Monitor 3 into its 85-2 compatibility
+    /// mode (its native stack at 0xBF00 is out of the return slot's
+    /// reach), and waits for that reboot before the load command.
+    #[test]
+    fn run_project_loads_and_runs_the_program() {
+        for model in [Model::Pmd852a, Model::Pmd852, Model::Pmd853, Model::Pmd851] {
+            let mut app = test_app();
+            app.rebuild_machine(&crate::app::MachineConfig {
+                model,
+                monitor: None,
+                rom_module: None,
+            });
+            app.project = Some(test_project("e2e"));
+            app.run_project();
+            assert!(app.running, "running after F5");
+            assert!(app.auto_type.is_some(), "the command is queued");
+
+            // Drive machine and auto-typer by frames, without pacing.
+            // The 85-3 needs the most frames: boot, the compatibility
+            // switch's reboot, then the load.
+            for _ in 0..4000 {
+                app.pump_auto_type();
+                app.run_frames(1);
+            }
+            assert!(app.auto_type.is_none(), "typing finished");
+            let ram = &app.machine.bus.memory.ram;
+            assert_eq!(ram[0x1000], 0x21, "program loaded at its ORG");
+            assert_eq!(ram[0x1001], 0x00, "LXI H,0C000 low byte");
+            assert_eq!(ram[0x1002], 0xC0, "LXI H,0C000 high byte");
+            assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
+            assert!(app.machine.cpu.halted, "the program ran to its HLT");
+        }
+    }
+
+    /// F5 with the ROM-module target, against every model: the built
+    /// program becomes a `.rmm` image, the app plugs it into the
+    /// module connector and reboots, the monitor BIOS transfers the
+    /// payload to 0x1000 through the connector's 8255 and runs it.
+    /// On the 85-1 the app types the `BASIC G` transfer command
+    /// instead (Monitor 1 has no boot-time detection).
+    #[test]
+    fn run_project_rom_module_boots_and_runs_the_program() {
+        for model in [Model::Pmd852a, Model::Pmd852, Model::Pmd853, Model::Pmd851] {
+            let mut app = test_app();
+            app.rebuild_machine(&crate::app::MachineConfig {
+                model,
+                monitor: None,
+                rom_module: None,
+            });
+            let mut project = test_project("e2e-module");
+            project.manifest.target = crate::project::Target::RomModule;
+            app.project = Some(project);
+            app.run_project();
+            assert!(app.running, "running after F5");
+            assert!(
+                app.machine.bus.memory.rom_module.is_some(),
+                "the module is attached"
+            );
+            assert_eq!(
+                app.auto_type.is_some(),
+                model == Model::Pmd851,
+                "only the 85-1 needs a typed command"
+            );
+
+            for _ in 0..3000 {
+                app.pump_auto_type();
+                app.run_frames(1);
+            }
+            assert!(app.auto_type.is_none(), "typing finished");
+            let ram = &app.machine.bus.memory.ram;
+            assert_eq!(ram[0x1000], 0x21, "program transferred at its ORG");
+            assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
+            assert!(app.machine.cpu.halted, "the program ran to its HLT");
+        }
     }
 
     /// Window requests from the UI queue up for the winit loop and
@@ -463,7 +584,10 @@ mod tests {
         assert_eq!(app.speed.multiplier, 2.0);
         app.set_multiplier(1.0);
         // Settings loaded from disk are clamped too.
-        let settings = AppSettings { speed: 500.0, ..AppSettings::default() };
+        let settings = AppSettings {
+            speed: 500.0,
+            ..AppSettings::default()
+        };
         let app = app_with_settings(settings);
         assert_eq!(app.speed.multiplier, crate::speed::SPEED_MAX);
     }
@@ -642,9 +766,18 @@ mod tests {
         let mut app2 = test_app();
         app2.set_settings_dir(dir.clone());
         app2.restore_layout();
-        assert!(crate::ui::dock::tab_visible(&app2.ui.dock, crate::ui::dock::Tab::Screen));
-        assert!(crate::ui::dock::tab_visible(&app2.ui.dock, crate::ui::dock::Tab::Keyboard));
-        assert!(crate::ui::dock::tab_visible(&app2.ui.dock, crate::ui::dock::Tab::Tape));
+        assert!(crate::ui::dock::tab_visible(
+            &app2.ui.dock,
+            crate::ui::dock::Tab::Screen
+        ));
+        assert!(crate::ui::dock::tab_visible(
+            &app2.ui.dock,
+            crate::ui::dock::Tab::Keyboard
+        ));
+        assert!(crate::ui::dock::tab_visible(
+            &app2.ui.dock,
+            crate::ui::dock::Tab::Tape
+        ));
 
         // A corrupt layout file must not take the app down.
         std::fs::write(app.layout_path().unwrap(), "{ not json").unwrap();
@@ -660,8 +793,7 @@ mod tests {
         // A layout without the (non-closable) screen tab is refused
         // as well — it cannot happen through the UI, only by hand
         // editing the file.
-        let screenless =
-            serde_json::to_string(&crate::ui::dock::default_dock()).unwrap();
+        let screenless = serde_json::to_string(&crate::ui::dock::default_dock()).unwrap();
         let screenless = screenless.replace("\"Screen\"", "\"Keyboard\"");
         std::fs::write(app.layout_path().unwrap(), screenless).unwrap();
         let mut app4 = test_app();
@@ -738,7 +870,11 @@ mod tests {
         let mut addr = 0x0500u16;
         for _ in 0..10 {
             chain.push(addr);
-            let bytes = [read(addr), read(addr.wrapping_add(1)), read(addr.wrapping_add(2))];
+            let bytes = [
+                read(addr),
+                read(addr.wrapping_add(1)),
+                read(addr.wrapping_add(2)),
+            ];
             let (_, len) = pmd85_core::disasm::disassemble(addr, &bytes);
             addr = addr.wrapping_add(len as u16);
             if addr > 0x0505 {
@@ -1015,7 +1151,10 @@ mod tests {
             frames < 120,
             "flash load took {frames} frames — not much faster than real"
         );
-        assert_eq!(app.machine.bus.memory.ram[0x1000..0x1000 + content.len()], content[..]);
+        assert_eq!(
+            app.machine.bus.memory.ram[0x1000..0x1000 + content.len()],
+            content[..]
+        );
 
         // A few frames later the machine is back at the monitor
         // prompt, not stuck in the tape wait.
@@ -1056,7 +1195,7 @@ mod tests {
         loader[24] = 0x76; // HLT
         loader[0x40..0x43].copy_from_slice(&[0x32, 0x01, 0x30]); // STA 3001
         loader[0x43] = 0x76; // HLT
-        // Autorun vector: the block read's RET at EDE1 pops this word.
+                             // Autorun vector: the block read's RET at EDE1 pops this word.
         loader[HIJACK - 0x1000] = 0x00;
         loader[HIJACK - 0x1000 + 1] = 0x10;
 
@@ -1090,8 +1229,14 @@ mod tests {
         // The loader ran (via autorun), read the continuation block
         // through BLKLOAD, and halted on the success path.
         assert!(app.machine.cpu.halted, "the loader never halted");
-        assert_eq!(app.machine.bus.memory.ram[0x3000], 0xA5, "autorun did not run");
-        assert_eq!(app.machine.bus.memory.ram[0x3001], 0x00, "checksum mismatch");
+        assert_eq!(
+            app.machine.bus.memory.ram[0x3000], 0xA5,
+            "autorun did not run"
+        );
+        assert_eq!(
+            app.machine.bus.memory.ram[0x3001], 0x00,
+            "checksum mismatch"
+        );
         for (i, &expect) in payload.iter().enumerate() {
             assert_eq!(app.machine.bus.memory.ram[0x2000 + i], expect, "+{i}");
         }
@@ -1138,7 +1283,10 @@ mod tests {
                 break;
             }
         }
-        assert!(!app.machine.bus.tape.is_recording(), "recorder still active");
+        assert!(
+            !app.machine.bus.tape.is_recording(),
+            "recorder still active"
+        );
         assert_eq!(app.tape.files().len(), 1, "recorded file not harvested");
         assert!(app.tape.dirty);
         assert_eq!(app.tape.export_file(0).unwrap(), content);
@@ -1151,10 +1299,8 @@ mod tests {
     /// A scratch settings dir of the test's own (tests run in
     /// parallel; the quick slot lives next to the settings).
     fn state_scratch_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pmd85-app-state-{}-{label}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pmd85-app-state-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1225,9 +1371,10 @@ mod tests {
         let dir = state_scratch_dir("tapebusy");
         let path = dir.join("state.pss");
         app.tape.flash = false;
-        app.tape.tape.blocks.push(
-            tape::make_file(0, b'?', "LOADTST", 0x1000, &[0x76, 1, 2, 3]).unwrap(),
-        );
+        app.tape
+            .tape
+            .blocks
+            .push(tape::make_file(0, b'?', "LOADTST", 0x1000, &[0x76, 1, 2, 3]).unwrap());
 
         app.run_frames(500);
         use Key::*;
@@ -1260,12 +1407,14 @@ mod tests {
             app.run_frames(1);
         }
         assert!(app.can_save_state());
-        app.save_state_to(&path).expect("save after the session ends");
+        app.save_state_to(&path)
+            .expect("save after the session ends");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn load_state_reports_corrupt_files_and_repaints() {        let mut app = test_app();
+    fn load_state_reports_corrupt_files_and_repaints() {
+        let mut app = test_app();
         let dir = state_scratch_dir("corrupt");
         let bad = dir.join("bad.pss");
         std::fs::write(&bad, b"definitely not a save state").unwrap();
@@ -1331,9 +1480,10 @@ mod tests {
 
         // A tape with unsaved edits, a path and a selection.
         let tape_path = dir.join("mygame.ptp");
-        app.tape.tape.blocks.push(
-            tape::make_file(0, b'?', "GAME", 0x1000, &[1, 2, 3, 4]).unwrap(),
-        );
+        app.tape
+            .tape
+            .blocks
+            .push(tape::make_file(0, b'?', "GAME", 0x1000, &[1, 2, 3, 4]).unwrap());
         app.tape.tape.blocks[0].body_bytes[1] ^= 0xFF; // an unsaved edit
         app.tape.path = Some(tape_path.clone());
         app.tape.dirty = true;
@@ -1344,16 +1494,20 @@ mod tests {
         app2.set_settings_dir(dir.clone());
         app2.restore_session();
         assert_eq!(app2.tape.tape.blocks.len(), 1);
-        assert_eq!(app2.tape.tape.blocks[0].body_bytes, app.tape.tape.blocks[0].body_bytes);
+        assert_eq!(
+            app2.tape.tape.blocks[0].body_bytes,
+            app.tape.tape.blocks[0].body_bytes
+        );
         assert_eq!(app2.tape.path, Some(tape_path), "Save keeps writing there");
         assert!(app2.tape.dirty, "the dirty dot survived");
         assert_eq!(app2.tape.selected, Some(0));
 
         // An untitled tape (no path) round-trips too.
         app2.tape.clear();
-        app2.tape.tape.blocks.push(
-            tape::make_file(3, b'?', "SCRATCH", 0x2000, &[9]).unwrap(),
-        );
+        app2.tape
+            .tape
+            .blocks
+            .push(tape::make_file(3, b'?', "SCRATCH", 0x2000, &[9]).unwrap());
         app2.tape.dirty = true;
         app2.save_session();
         let mut app3 = test_app();
@@ -1380,7 +1534,10 @@ mod tests {
         std::fs::write(dir.join("session/tape.ptp"), b"not a tape").unwrap();
         std::fs::write(dir.join("session/session.json"), "{not json").unwrap();
         app.restore_session();
-        assert!(app.tape.tape.blocks.is_empty(), "corrupt tape snapshot ignored");
+        assert!(
+            app.tape.tape.blocks.is_empty(),
+            "corrupt tape snapshot ignored"
+        );
         assert_eq!(app.tape.path, None, "corrupt sidecar ignored");
         assert!(!app.tape.dirty);
         let _ = std::fs::remove_dir_all(&dir);

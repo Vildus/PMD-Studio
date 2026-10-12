@@ -96,19 +96,58 @@ fn main_block() -> Vec<Vec<Cap>> {
         // Row 1: digits (SHIFT engravings on top), then the PTL/INS,
         // DEL and CLR column of the control grid.
         vec![
-            Cap { shift: Some("!"), ..cap(Some(Digit1), "1", 1.0) },
-            Cap { shift: Some("\""), ..cap(Some(Digit2), "2", 1.0) },
-            Cap { shift: Some("#"), ..cap(Some(Digit3), "3", 1.0) },
-            Cap { shift: Some("$"), ..cap(Some(Digit4), "4", 1.0) },
-            Cap { shift: Some("%"), ..cap(Some(Digit5), "5", 1.0) },
-            Cap { shift: Some("&"), ..cap(Some(Digit6), "6", 1.0) },
-            Cap { shift: Some("'"), ..cap(Some(Digit7), "7", 1.0) },
-            Cap { shift: Some("("), ..cap(Some(Digit8), "8", 1.0) },
-            Cap { shift: Some(")"), ..cap(Some(Digit9), "9", 1.0) },
-            Cap { shift: Some("-"), ..cap(Some(Digit0), "0", 1.0) },
-            Cap { shift: Some("="), ..cap(Some(Minus), "_", 1.0) },
-            Cap { shift: Some("}"), ..cap(Some(Equals), "{", 1.0) },
-            Cap { sub: Some("INS"), ..cap(Some(Insert), "PTL", 1.0) },
+            Cap {
+                shift: Some("!"),
+                ..cap(Some(Digit1), "1", 1.0)
+            },
+            Cap {
+                shift: Some("\""),
+                ..cap(Some(Digit2), "2", 1.0)
+            },
+            Cap {
+                shift: Some("#"),
+                ..cap(Some(Digit3), "3", 1.0)
+            },
+            Cap {
+                shift: Some("$"),
+                ..cap(Some(Digit4), "4", 1.0)
+            },
+            Cap {
+                shift: Some("%"),
+                ..cap(Some(Digit5), "5", 1.0)
+            },
+            Cap {
+                shift: Some("&"),
+                ..cap(Some(Digit6), "6", 1.0)
+            },
+            Cap {
+                shift: Some("'"),
+                ..cap(Some(Digit7), "7", 1.0)
+            },
+            Cap {
+                shift: Some("("),
+                ..cap(Some(Digit8), "8", 1.0)
+            },
+            Cap {
+                shift: Some(")"),
+                ..cap(Some(Digit9), "9", 1.0)
+            },
+            Cap {
+                shift: Some("-"),
+                ..cap(Some(Digit0), "0", 1.0)
+            },
+            Cap {
+                shift: Some("="),
+                ..cap(Some(Minus), "_", 1.0)
+            },
+            Cap {
+                shift: Some("}"),
+                ..cap(Some(Equals), "{", 1.0)
+            },
+            Cap {
+                sub: Some("INS"),
+                ..cap(Some(Insert), "PTL", 1.0)
+            },
             cap(Some(Delete), "DEL", 1.0),
             cap(Some(ClrScr), "CLR", 1.0),
         ],
@@ -125,8 +164,14 @@ fn main_block() -> Vec<Vec<Cap>> {
             cap(Some(I), "I", 1.0),
             cap(Some(O), "O", 1.0),
             cap(Some(P), "P", 1.0),
-            Cap { shift: Some("`"), ..cap(Some(OpenBracket), "@", 1.0) },
-            Cap { shift: Some("^"), ..cap(Some(CloseBracket), "\\", 1.0) },
+            Cap {
+                shift: Some("`"),
+                ..cap(Some(OpenBracket), "@", 1.0)
+            },
+            Cap {
+                shift: Some("^"),
+                ..cap(Some(CloseBracket), "\\", 1.0)
+            },
             cap(Some(Backspace), "\u{2190}", 1.0),
             cap(Some(CursorUp), "\u{2196}", 1.0),
             cap(Some(CursorRight), "\u{2192}", 1.0),
@@ -144,9 +189,18 @@ fn main_block() -> Vec<Vec<Cap>> {
             cap(Some(J), "J", 1.0),
             cap(Some(K), "K", 1.0),
             cap(Some(L), "L", 1.0),
-            Cap { shift: Some("+"), ..cap(Some(Semicolon), ";", 1.0) },
-            Cap { shift: Some("*"), ..cap(Some(Quote), ":", 1.0) },
-            Cap { shift: Some("]"), ..cap(Some(Backslash), "[", 1.0) },
+            Cap {
+                shift: Some("+"),
+                ..cap(Some(Semicolon), ";", 1.0)
+            },
+            Cap {
+                shift: Some("*"),
+                ..cap(Some(Quote), ":", 1.0)
+            },
+            Cap {
+                shift: Some("]"),
+                ..cap(Some(Backslash), "[", 1.0)
+            },
             cap(Some(LineStart), "|\u{2190}", 1.0),
             cap(Some(CursorDown), "END", 1.0),
             cap(Some(LineEnd), "\u{2192}|", 1.0),
@@ -163,9 +217,18 @@ fn main_block() -> Vec<Vec<Cap>> {
             cap(Some(B), "B", 1.0),
             cap(Some(N), "N", 1.0),
             cap(Some(M), "M", 1.0),
-            Cap { shift: Some("<"), ..cap(Some(Comma), ",", 1.0) },
-            Cap { shift: Some(">"), ..cap(Some(Period), ".", 1.0) },
-            Cap { shift: Some("?"), ..cap(Some(Slash), "/", 1.0) },
+            Cap {
+                shift: Some("<"),
+                ..cap(Some(Comma), ",", 1.0)
+            },
+            Cap {
+                shift: Some(">"),
+                ..cap(Some(Period), ".", 1.0)
+            },
+            Cap {
+                shift: Some("?"),
+                ..cap(Some(Slash), "/", 1.0)
+            },
             cap(Some(Shift), "SHIFT", 1.5),
             cap(Some(Stop), "STOP", 1.0),
             cap(Some(Enter), "EOL", 1.0),
@@ -204,20 +267,22 @@ fn block_size(rows: &[Vec<Cap>]) -> egui::Vec2 {
     egui::vec2(w, (h - GAP).max(0.0))
 }
 
-fn paint_cap(
-    p: &egui::Painter,
-    rect: egui::Rect,
-    cap: &Cap,
-    theme: &Theme,
-    kb: &Keyboard,
-) {
+fn paint_cap(p: &egui::Painter, rect: egui::Rect, cap: &Cap, theme: &Theme, kb: &Keyboard) {
     if cap.hidden {
         return;
     }
     let c = |f: &[u8; 4]| Theme::color(f);
     let pressed = cap.key.is_some_and(|k| kb.is_pressed(k));
-    let fill = if pressed { c(&theme.accent_dim) } else { c(&theme.widget) };
-    let stroke = if pressed { c(&theme.accent) } else { c(&theme.panel_border) };
+    let fill = if pressed {
+        c(&theme.accent_dim)
+    } else {
+        c(&theme.widget)
+    };
+    let stroke = if pressed {
+        c(&theme.accent)
+    } else {
+        c(&theme.panel_border)
+    };
     p.rect_filled(rect, egui::CornerRadius::same(2), fill);
     p.rect_stroke(
         rect,
@@ -229,8 +294,16 @@ fn paint_cap(
         return;
     }
     let mono = egui::FontId::monospace;
-    let main_color = if pressed { c(&theme.accent) } else { c(&theme.text) };
-    let main_size = if cap.main.chars().count() > 1 { 11.0 } else { 13.0 };
+    let main_color = if pressed {
+        c(&theme.accent)
+    } else {
+        c(&theme.text)
+    };
+    let main_size = if cap.main.chars().count() > 1 {
+        11.0
+    } else {
+        13.0
+    };
     let dy = if cap.sub.is_some() { -5.0 } else { 0.0 };
     p.text(
         rect.center() + egui::vec2(0.0, dy),
@@ -311,8 +384,8 @@ fn apply_pointer(app: &mut App, held: Option<&Cap>) {
     let target = held.and_then(|c| c.key);
     // Unchanged, unless the matrix was reset behind our back (window
     // focus loss) while the same key was pointer-held.
-    let unchanged = app.ui.mouse_key == target
-        && target.is_none_or(|k| app.machine.bus.keyboard.is_pressed(k));
+    let unchanged =
+        app.ui.mouse_key == target && target.is_none_or(|k| app.machine.bus.keyboard.is_pressed(k));
     if !unchanged {
         if let Some(old) = app.ui.mouse_key.take() {
             app.machine.bus.keyboard.set_key(old, false);
@@ -333,13 +406,9 @@ fn apply_pointer(app: &mut App, held: Option<&Cap>) {
 /// Color-coding legend above the layout.
 fn legend(ui: &mut egui::Ui, theme: &Theme) {
     ui.horizontal(|ui| {
-        let entries = [
-            (&theme.text, "key"),
-            (&theme.accent, "SHIFT+key"),
-        ];
+        let entries = [(&theme.text, "key"), (&theme.accent, "SHIFT+key")];
         for (color, label) in entries {
-            let (dot, _) =
-                ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
+            let (dot, _) = ui.allocate_exact_size(egui::vec2(9.0, 9.0), egui::Sense::hover());
             ui.painter()
                 .rect_filled(dot, egui::CornerRadius::same(1), Theme::color(color));
             ui.label(
@@ -379,21 +448,19 @@ pub fn ui(ui: &mut egui::Ui, app: &mut App) {
     // auto_shrink: the tab opens at the content size (no
     // scrollbars); scrolling only kicks in if the user shrinks the
     // dock pane below it.
-    egui::ScrollArea::both()
-        .auto_shrink(true)
-        .show(ui, |ui| {
-            let (rect, _) = ui.allocate_exact_size(total, egui::Sense::click());
-            draw_block(ui.painter(), rect.min, &rows, &theme, &kb);
-            // Click-to-press: the cap under a held pointer
-            // button is pressed, sliding slides the keypress.
-            let held = if ui.input(|i| i.pointer.primary_down()) {
-                ui.input(|i| i.pointer.interact_pos())
-                    .and_then(|pos| hit_cap(rect.min, &rows, pos))
-            } else {
-                None
-            };
-            apply_pointer(app, held);
-        });
+    egui::ScrollArea::both().auto_shrink(true).show(ui, |ui| {
+        let (rect, _) = ui.allocate_exact_size(total, egui::Sense::click());
+        draw_block(ui.painter(), rect.min, &rows, &theme, &kb);
+        // Click-to-press: the cap under a held pointer
+        // button is pressed, sliding slides the keypress.
+        let held = if ui.input(|i| i.pointer.primary_down()) {
+            ui.input(|i| i.pointer.interact_pos())
+                .and_then(|pos| hit_cap(rect.min, &rows, pos))
+        } else {
+            None
+        };
+        apply_pointer(app, held);
+    });
 }
 
 /// Release a pointer-held key (the panel is closing or being
@@ -466,13 +533,31 @@ mod tests {
     fn mapped_caps_use_valid_keys() {
         let caps = engraved_keys();
         for key in [
-            Key::Q, Key::Z, Key::Y, Key::Space, Key::Enter, Key::Tab,
-            Key::Stop, Key::Shift, Key::Cd, Key::Wrk, Key::Recall,
-            Key::ClrScr, Key::Insert, Key::Delete, Key::LineStart,
-            Key::LineEnd, Key::CursorUp, Key::CursorDown,
-            Key::CursorRight, Key::Backspace,
+            Key::Q,
+            Key::Z,
+            Key::Y,
+            Key::Space,
+            Key::Enter,
+            Key::Tab,
+            Key::Stop,
+            Key::Shift,
+            Key::Cd,
+            Key::Wrk,
+            Key::Recall,
+            Key::ClrScr,
+            Key::Insert,
+            Key::Delete,
+            Key::LineStart,
+            Key::LineEnd,
+            Key::CursorUp,
+            Key::CursorDown,
+            Key::CursorRight,
+            Key::Backspace,
         ] {
-            assert!(caps.iter().any(|&(_, k)| k == key), "{key:?} missing from the layout");
+            assert!(
+                caps.iter().any(|&(_, k)| k == key),
+                "{key:?} missing from the layout"
+            );
         }
     }
 
@@ -490,7 +575,10 @@ mod tests {
         let origin = egui::Pos2::ZERO;
         let rects = cap_rects(origin, &rows);
         let a = rects.iter().find(|(_, c)| c.main == "A").unwrap();
-        assert_eq!(hit_cap(origin, &rows, a.0.center()).unwrap().key, Some(Key::A));
+        assert_eq!(
+            hit_cap(origin, &rows, a.0.center()).unwrap().key,
+            Some(Key::A)
+        );
         // The stagger spacers are not clickable, even though they sit
         // in the row's geometry.
         let spacer = rects.iter().find(|(_, c)| c.hidden).unwrap();

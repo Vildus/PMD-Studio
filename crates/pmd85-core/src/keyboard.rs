@@ -36,8 +36,8 @@ pub enum Key {
     Digit8,
     Digit9,
     Digit0,
-    Minus,   // PMD key right of 0 (prints _ / =)
-    Equals,  // PMD key right of Minus (prints { / } )
+    Minus,  // PMD key right of 0 (prints _ / =)
+    Equals, // PMD key right of Minus (prints { / } )
     Q,
     W,
     E,
@@ -73,8 +73,8 @@ pub enum Key {
     Slash,
     Backslash, // [ ]
     Space,
-    Enter, // EOL1
-    Tab,   // EOL2
+    Enter,     // EOL1
+    Tab,       // EOL2
     Backspace, // "<-" left arrow
     Insert,    // INS PTL ("|<-")
     Delete,    // DEL
@@ -333,13 +333,40 @@ mod tests {
     fn matrix_positions_are_unique() {
         use std::collections::HashSet;
         let keys = [
-            Key::K0, Key::K11, Key::Digit0, Key::A, Key::Z, Key::M, Key::Space,
-            Key::Enter, Key::Tab, Key::Backspace, Key::Insert, Key::Delete,
-            Key::ClrScr, Key::Recall, Key::CursorLeft, Key::CursorRight,
-            Key::CursorUp, Key::CursorDown, Key::LineStart, Key::LineEnd,
-            Key::Wrk, Key::Cd, Key::Shift, Key::Stop, Key::Minus, Key::Equals,
-            Key::OpenBracket, Key::CloseBracket, Key::Backslash, Key::Quote,
-            Key::Semicolon, Key::Slash, Key::Period, Key::Comma,
+            Key::K0,
+            Key::K11,
+            Key::Digit0,
+            Key::A,
+            Key::Z,
+            Key::M,
+            Key::Space,
+            Key::Enter,
+            Key::Tab,
+            Key::Backspace,
+            Key::Insert,
+            Key::Delete,
+            Key::ClrScr,
+            Key::Recall,
+            Key::CursorLeft,
+            Key::CursorRight,
+            Key::CursorUp,
+            Key::CursorDown,
+            Key::LineStart,
+            Key::LineEnd,
+            Key::Wrk,
+            Key::Cd,
+            Key::Shift,
+            Key::Stop,
+            Key::Minus,
+            Key::Equals,
+            Key::OpenBracket,
+            Key::CloseBracket,
+            Key::Backslash,
+            Key::Quote,
+            Key::Semicolon,
+            Key::Slash,
+            Key::Period,
+            Key::Comma,
         ];
         let mut seen = HashSet::new();
         for k in keys {

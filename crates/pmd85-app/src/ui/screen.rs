@@ -41,10 +41,8 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 (leftover.y / 2.0).floor().max(0.0),
             );
             let outer_rect = outer_rect.translate(shift);
-            let inner_rect = egui::Rect::from_min_size(
-                outer_rect.min + egui::vec2(bezel, bezel),
-                image_size,
-            );
+            let inner_rect =
+                egui::Rect::from_min_size(outer_rect.min + egui::vec2(bezel, bezel), image_size);
 
             // Soft glow behind the bezel, then the bezel itself.
             ui.painter().rect_filled(

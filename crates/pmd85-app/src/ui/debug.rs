@@ -96,15 +96,8 @@ fn register_strip(ui: &mut egui::Ui, app: &mut App) {
     let accent = Theme::color(&theme.accent);
     let warn = Theme::color(&theme.warn);
     let m = &app.machine;
-    let value = |s: String, color| {
-        egui::RichText::new(s).monospace().size(12.0).color(color)
-    };
-    let name = |s: &str| {
-        egui::RichText::new(s)
-            .monospace()
-            .size(10.0)
-            .color(weak)
-    };
+    let value = |s: String, color| egui::RichText::new(s).monospace().size(12.0).color(color);
+    let name = |s: &str| egui::RichText::new(s).monospace().size(10.0).color(weak);
 
     ui.horizontal(|ui| {
         for (label, hi, lo) in [
@@ -186,20 +179,10 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App) {
     let theme = app.active_theme_data();
     let accent = Theme::color(&theme.accent);
     ui.horizontal(|ui| {
-        if icon_button(
-            ui,
-            icon::STEPS,
-            "Step one instruction (Alt+F10)",
-            accent,
-        ) {
+        if icon_button(ui, icon::STEPS, "Step one instruction (Alt+F10)", accent) {
             app.debug_step();
         }
-        if icon_button(
-            ui,
-            icon::SKIP_FORWARD,
-            "Step over a call (Alt+F11)",
-            accent,
-        ) {
+        if icon_button(ui, icon::SKIP_FORWARD, "Step over a call (Alt+F11)", accent) {
             app.debug_step_over();
         }
         if icon_button(
@@ -255,13 +238,11 @@ fn listing(ui: &mut egui::Ui, app: &mut App) {
     // anchor.
     let wheel = ui.ctx().input(|i| i.smooth_scroll_delta.y);
     if wheel != 0.0 && ui.ui_contains_pointer() {
-        let lines =
-            ((wheel.abs() / 14.0).ceil() as isize).clamp(1, 8) * wheel.signum() as isize;
+        let lines = ((wheel.abs() / 14.0).ceil() as isize).clamp(1, 8) * wheel.signum() as isize;
         if app.ui.debug.follow_pc {
             app.ui.debug.offset = clamp_offset(app.ui.debug.offset + lines, rows);
         } else if lines > 0 {
-            app.ui.debug.anchor =
-                back_anchor(&app.machine, app.ui.debug.anchor, lines as usize);
+            app.ui.debug.anchor = back_anchor(&app.machine, app.ui.debug.anchor, lines as usize);
         } else {
             let mut addr = app.ui.debug.anchor;
             for _ in 0..(-lines) {
@@ -299,7 +280,11 @@ fn listing(ui: &mut egui::Ui, app: &mut App) {
     for (addr, instr, has_bp) in lines {
         let is_pc = addr == pc;
         egui::Frame::new()
-            .fill(if is_pc { fill } else { egui::Color32::TRANSPARENT })
+            .fill(if is_pc {
+                fill
+            } else {
+                egui::Color32::TRANSPARENT
+            })
             .inner_margin(egui::Margin::symmetric(2, 0))
             .corner_radius(egui::CornerRadius::same(2))
             .show(ui, |ui| {
@@ -423,8 +408,8 @@ pub fn memory(ui: &mut egui::Ui, app: &mut App) {
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
     if let Some(row) = d.memory_scroll.take() {
-        scroll_area = scroll_area
-            .vertical_scroll_offset((row.saturating_sub(3)) as f32 * row_height);
+        scroll_area =
+            scroll_area.vertical_scroll_offset((row.saturating_sub(3)) as f32 * row_height);
     }
     let mem = &app.machine.bus.memory;
     scroll_area.show_rows(ui, row_height, total_rows, |ui, row_range| {

@@ -1,0 +1,11 @@
+[package]
+name = "pmd85-asm"
+description = "Intel 8080 assembler for the PMD 85 IDE"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+pmd85-core = { workspace = true }

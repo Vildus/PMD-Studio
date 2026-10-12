@@ -2440,6 +2440,7 @@ dependencies = [
  "gilrs",
  "image",
  "log",
+ "pmd85-asm",
  "pmd85-core",
  "pollster 0.3.0",
  "raw-window-handle",
@@ -2449,6 +2450,13 @@ dependencies = [
  "wgpu",
  "winit",
  "winresource",
+]
+
+[[package]]
+name = "pmd85-asm"
+version = "0.1.0"
+dependencies = [
+ "pmd85-core",
 ]
 
 [[package]]

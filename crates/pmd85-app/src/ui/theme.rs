@@ -75,9 +75,10 @@ egui_phosphor::subset! {
     pub mod icons {
         use regular::{
             ARROW_CLOCKWISE, ARROW_DOWN, ARROW_UP, CASSETTE_TAPE, CORNERS_OUT, DOWNLOAD_SIMPLE,
-            FILE_PLUS, FLOPPY_DISK, FLOPPY_DISK_BACK, FOLDER_OPEN, GAME_CONTROLLER, GEAR, KEYBOARD,
-            LIST_BULLETS, MEMORY, MINUS, PAUSE, PLAY, RECORD, SKIP_FORWARD, SPEAKER_HIGH,
-            SPEAKER_SLASH, SPEAKER_X, SQUARE, STEPS, STOP, TRASH, UPLOAD_SIMPLE, WARNING_CIRCLE, X,
+            FILE_CODE, FILE_PLUS, FLOPPY_DISK, FLOPPY_DISK_BACK, FOLDER_OPEN, GAME_CONTROLLER, GEAR,
+            KEYBOARD, LIST_BULLETS, LIST_CHECKS, MAGNIFYING_GLASS, MEMORY, MINUS, PAUSE, PLAY,
+            RECORD, SKIP_FORWARD, SPEAKER_HIGH, SPEAKER_SLASH, SPEAKER_X, SQUARE, STEPS, STOP,
+            TRASH, UPLOAD_SIMPLE, WARNING_CIRCLE, X,
         };
     }
 }
@@ -216,15 +217,15 @@ impl Theme {
         let mut fonts = egui::FontDefinitions::default();
         fonts.font_data.insert(
             "ibm-plex-mono".into(),
-            std::sync::Arc::new(egui::FontData::from_static(
-                include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"),
-            )),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../../assets/fonts/IBMPlexMono-Regular.ttf"
+            ))),
         );
         fonts.font_data.insert(
             "ibm-plex-mono-semibold".into(),
-            std::sync::Arc::new(egui::FontData::from_static(
-                include_bytes!("../../assets/fonts/IBMPlexMono-SemiBold.ttf"),
-            )),
+            std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+                "../../assets/fonts/IBMPlexMono-SemiBold.ttf"
+            ))),
         );
         // Monospace body font, and the proportional default too: this
         // app is all terminal.
@@ -293,9 +294,19 @@ mod tests {
         let names: Vec<_> = presets.iter().map(|t| t.name.clone()).collect();
         for t in &presets {
             for field in [
-                &t.bg, &t.panel, &t.panel_border, &t.widget, &t.widget_hover,
-                &t.widget_active, &t.text, &t.text_weak, &t.accent, &t.accent_dim,
-                &t.warn, &t.danger, &t.screen_bezel,
+                &t.bg,
+                &t.panel,
+                &t.panel_border,
+                &t.widget,
+                &t.widget_hover,
+                &t.widget_active,
+                &t.text,
+                &t.text_weak,
+                &t.accent,
+                &t.accent_dim,
+                &t.warn,
+                &t.danger,
+                &t.screen_bezel,
             ] {
                 assert_eq!(field[3], 255, "{} has translucent color", t.name);
             }

@@ -21,7 +21,13 @@ fn main() {
                 model = Model::from_str_loose(&args.next().expect("--model needs a value"))
                     .expect("unknown model");
             }
-            "--frames" => frames = args.next().expect("--frames needs a value").parse().unwrap(),
+            "--frames" => {
+                frames = args
+                    .next()
+                    .expect("--frames needs a value")
+                    .parse()
+                    .unwrap()
+            }
             "--press" => typed = args.next().expect("--press needs a value"),
             "--rom-module" => rom_module = Some(args.next().expect("--rom-module needs a value")),
             "--trace-module-ports" => trace_module_ports = true,
@@ -67,7 +73,10 @@ fn main() {
     }
 
     // dump the monitor's system area in hidden VRAM bytes
-    println!("ram[0xC100..0xC180] = {:02x?}", &machine.bus.memory.ram[0xC100..0xC180]);
+    println!(
+        "ram[0xC100..0xC180] = {:02x?}",
+        &machine.bus.memory.ram[0xC100..0xC180]
+    );
     println!(
         "tune ptr @0xC130 = {:#06x}",
         machine.bus.memory.ram[0xC130] as u16 | (machine.bus.memory.ram[0xC131] as u16) << 8
@@ -198,12 +207,42 @@ fn trace_frames(machine: &mut Machine, frames: u64) {
 fn char_to_key(c: char) -> Option<Key> {
     use Key::*;
     Some(match c.to_ascii_uppercase() {
-        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E, 'F' => F, 'G' => G,
-        'H' => H, 'I' => I, 'J' => J, 'K' => K, 'L' => L, 'M' => M, 'N' => N,
-        'O' => O, 'P' => P, 'Q' => Q, 'R' => R, 'S' => S, 'T' => T, 'U' => U,
-        'V' => V, 'W' => W, 'X' => X, 'Y' => Y, 'Z' => Z,
-        '0' => Digit0, '1' => Digit1, '2' => Digit2, '3' => Digit3, '4' => Digit4,
-        '5' => Digit5, '6' => Digit6, '7' => Digit7, '8' => Digit8, '9' => Digit9,
+        'A' => A,
+        'B' => B,
+        'C' => C,
+        'D' => D,
+        'E' => E,
+        'F' => F,
+        'G' => G,
+        'H' => H,
+        'I' => I,
+        'J' => J,
+        'K' => K,
+        'L' => L,
+        'M' => M,
+        'N' => N,
+        'O' => O,
+        'P' => P,
+        'Q' => Q,
+        'R' => R,
+        'S' => S,
+        'T' => T,
+        'U' => U,
+        'V' => V,
+        'W' => W,
+        'X' => X,
+        'Y' => Y,
+        'Z' => Z,
+        '0' => Digit0,
+        '1' => Digit1,
+        '2' => Digit2,
+        '3' => Digit3,
+        '4' => Digit4,
+        '5' => Digit5,
+        '6' => Digit6,
+        '7' => Digit7,
+        '8' => Digit8,
+        '9' => Digit9,
         ' ' => Space,
         '\n' | '\r' => Enter,
         _ => return None,

@@ -7,12 +7,12 @@
 
 use crate::audio::{SpeakerEdge, SpeakerEdgeLog};
 use crate::bus::Memory;
-use crate::chips::ppi8255::{I8255, Port};
 use crate::chips::pit8253::I8253;
+use crate::chips::ppi8255::{Port, I8255};
 use crate::chips::usart8251::I8251;
 use crate::cpu::{Bus, Cpu, Flags};
-use crate::keyboard::Keyboard;
 use crate::joystick::Joystick;
+use crate::keyboard::Keyboard;
 use crate::model::Model;
 use crate::state::{StateError, StateReader, StateWriter};
 use crate::tapedeck::{PlayItem, TapeDeck};
@@ -76,7 +76,7 @@ impl MachineBus {
             ppi_rom: I8255::new(),
             pit: I8253::new(),
             uart: I8251::new(),
-            tape: TapeDeck::new(),
+            tape: TapeDeck::new(model == Model::Pmd851),
             speaker_level: false,
             led: false,
             speaker_edges: SpeakerEdgeLog::default(),
@@ -843,12 +843,7 @@ mod tests {
 
     #[test]
     fn names_round_trip() {
-        for model in [
-            Model::Pmd851,
-            Model::Pmd852,
-            Model::Pmd852a,
-            Model::Pmd853,
-        ] {
+        for model in [Model::Pmd851, Model::Pmd852, Model::Pmd852a, Model::Pmd853] {
             assert_eq!(Model::from_str_loose(model.name()), Some(model));
         }
     }
@@ -868,7 +863,7 @@ mod tests {
     fn keyboard_scan_through_system_ppi() {
         let mut m = Machine::new(Model::Pmd853, &rom(0x2000), None);
         m.bus.io_write(0x87, 0x00); // clear startup map
-        // configure: mode 0, PA out, PB in, PC out: 0x82
+                                    // configure: mode 0, PA out, PB in, PC out: 0x82
         m.bus.io_write(0x87, 0x82);
         // write column 3 to port A (0x84 pattern: 1xxx01 00)
         m.bus.io_write(0x84, 0x03);
@@ -948,7 +943,7 @@ mod tests {
     fn speaker_pc0_gates_1khz_tone() {
         let mut m = Machine::new(Model::Pmd852, &rom(0x1000), None);
         m.bus.io_write(0x87, 0x00); // any write clears the startup map
-        // BSR: set PC0 -> gates the 1 kHz divider tone onto the speaker
+                                    // BSR: set PC0 -> gates the 1 kHz divider tone onto the speaker
         m.bus.io_write(0x87, 0b0000_0001);
         m.step_frame();
         let edges = m.take_speaker_edges();
@@ -972,9 +967,9 @@ mod tests {
         let module = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let mut m = Machine::new(Model::Pmd853, &rom(0x2000), Some(module));
         m.bus.io_write(0x87, 0x00); // clear startup map
-        // ROM module PPI at pattern 1xxx10aa -> 0x88..0x8B:
-        // PA = data read, PB/C = address select.
-        // mode word 0x98: PA in, PB out, PC out
+                                    // ROM module PPI at pattern 1xxx10aa -> 0x88..0x8B:
+                                    // PA = data read, PB/C = address select.
+                                    // mode word 0x98: PA in, PB out, PC out
         m.bus.io_write(0x8B, 0x98);
         m.bus.io_write(0x89, 0x02); // address low
         m.bus.io_write(0x8A, 0x00); // address high

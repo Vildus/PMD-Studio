@@ -54,17 +54,16 @@ pub fn ui(ui: &mut egui::Ui, app: &mut App) {
     // Both sticks side by side, in one interaction area: a press
     // slides between them like the keyboard caps slide between keys.
     let stick_w = stick_width();
-    let total = egui::vec2(
-        2.0 * stick_w + STICK_MARGIN,
-        HEADING + stick_height(),
-    );
+    let total = egui::vec2(2.0 * stick_w + STICK_MARGIN, HEADING + stick_height());
     let (rect, _) = ui.allocate_exact_size(total, Sense::click());
-    let diagram = |port: usize| rect.min + egui::vec2(port as f32 * (stick_w + STICK_MARGIN), HEADING);
+    let diagram =
+        |port: usize| rect.min + egui::vec2(port as f32 * (stick_w + STICK_MARGIN), HEADING);
     for port in [0usize, 1] {
         paint_stick(ui.painter(), diagram(port), app, port, &theme);
     }
     let held = if ui.input(|i| i.pointer.primary_down()) {
-        ui.input(|i| i.pointer.interact_pos()).and_then(|pos| hit_button(rect.min, pos))
+        ui.input(|i| i.pointer.interact_pos())
+            .and_then(|pos| hit_button(rect.min, pos))
     } else {
         None
     };
@@ -127,13 +126,7 @@ fn cap_rect(origin: Pos2, button: Button) -> Rect {
     )
 }
 
-fn paint_stick(
-    p: &egui::Painter,
-    origin: Pos2,
-    app: &App,
-    port: usize,
-    theme: &Theme,
-) {
+fn paint_stick(p: &egui::Painter, origin: Pos2, app: &App, port: usize, theme: &Theme) {
     let c = |f: &[u8; 4]| Theme::color(f);
     let stick = &app.machine.bus.joysticks[port];
     // The engraved arrows; fire is the round red cap.
@@ -144,7 +137,13 @@ fn paint_stick(
         (Button::Right, "\u{2192}"),
     ];
     for (button, glyph) in glyphs {
-        paint_cap(p, cap_rect(origin, button), glyph, stick.is_pressed(button), theme);
+        paint_cap(
+            p,
+            cap_rect(origin, button),
+            glyph,
+            stick.is_pressed(button),
+            theme,
+        );
     }
     let fire_rect = cap_rect(origin, Button::Fire);
     let pressed = stick.is_pressed(Button::Fire);
@@ -222,8 +221,7 @@ fn paint_cap(p: &egui::Painter, rect: Rect, glyph: &str, pressed: bool, theme: &
 /// The (connector, button) of the cap under `pos`, if any.
 fn hit_button(origin: Pos2, pos: Pos2) -> Option<(usize, Button)> {
     for port in [0usize, 1] {
-        let stick = origin
-            + egui::vec2(port as f32 * (stick_width() + STICK_MARGIN), HEADING);
+        let stick = origin + egui::vec2(port as f32 * (stick_width() + STICK_MARGIN), HEADING);
         for &(button, _, _) in &CROSS {
             if cap_rect(stick, button).contains(pos) {
                 return Some((port, button));
@@ -310,8 +308,16 @@ fn gamepads(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
                 egui::ComboBox::from_id_salt(&uuid)
                     .selected_text(selected)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut port, GamepadPort::Gpio0, "GPIO/0 \u{b7} joystick 0");
-                        ui.selectable_value(&mut port, GamepadPort::Gpio1, "GPIO/1 \u{b7} joystick 1");
+                        ui.selectable_value(
+                            &mut port,
+                            GamepadPort::Gpio0,
+                            "GPIO/0 \u{b7} joystick 0",
+                        );
+                        ui.selectable_value(
+                            &mut port,
+                            GamepadPort::Gpio1,
+                            "GPIO/1 \u{b7} joystick 1",
+                        );
                         ui.selectable_value(&mut port, GamepadPort::Off, "off");
                     });
                 if port != old {
@@ -321,12 +327,9 @@ fn gamepads(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
                     app.persist();
                 }
                 ui.label(
-                    egui::RichText::new(format!(
-                        "stick {:+.2} / {:+.2}",
-                        pad.stick.0, pad.stick.1
-                    ))
-                    .size(10.0)
-                    .color(Theme::color(&theme.text_weak)),
+                    egui::RichText::new(format!("stick {:+.2} / {:+.2}", pad.stick.0, pad.stick.1))
+                        .size(10.0)
+                        .color(Theme::color(&theme.text_weak)),
                 );
             });
     }
@@ -341,8 +344,8 @@ mod tests {
     #[test]
     fn hit_button_finds_caps() {
         for port in [0usize, 1] {
-            let origin =
-                egui::Pos2::ZERO + egui::vec2(port as f32 * (stick_width() + STICK_MARGIN), HEADING);
+            let origin = egui::Pos2::ZERO
+                + egui::vec2(port as f32 * (stick_width() + STICK_MARGIN), HEADING);
             for &(button, _, _) in &CROSS {
                 let center = cap_rect(origin, button).center();
                 assert_eq!(

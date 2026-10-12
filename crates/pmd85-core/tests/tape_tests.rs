@@ -10,16 +10,22 @@ use pmd85_core::tapedeck::PlayItem;
 
 const ROM_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../Rom/");
 
-/// Boot an 85-3 through the RAM test into the dialog line (as in the
+/// Boot a model through the RAM test into the dialog line (as in the
 /// boot tests).
-fn boot() -> Machine {
-    let monitor = std::fs::read(format!("{ROM_DIR}{}", Model::Pmd853.default_monitor()))
+fn boot_model(model: Model) -> Machine {
+    let monitor = std::fs::read(format!("{ROM_DIR}{}", model.default_monitor()))
         .expect("cannot read monitor ROM");
-    let mut machine = Machine::new(Model::Pmd853, &monitor, None);
+    let mut machine = Machine::new(model, &monitor, None);
     for _ in 0..500 {
         machine.step_frame();
     }
     machine
+}
+
+/// Boot an 85-3 through the RAM test into the dialog line (as in the
+/// boot tests).
+fn boot() -> Machine {
+    boot_model(Model::Pmd853)
 }
 
 /// Press a key long enough for the monitor scan loop to pick it up.
@@ -44,16 +50,23 @@ fn type_command(machine: &mut Machine, keys: &[Key]) {
 /// machine until both blocks have been fed. Returns whether playback
 /// ran to the end within `frames`.
 fn play_file(machine: &mut Machine, block: &TapeBlock, frames: u64) -> bool {
+    play_file_mode(machine, block, frames, false)
+}
+
+/// [`play_file`] with the session flavor chosen: realtime
+/// demodulation, or a flash session (intercepts on the 85-2/3, the
+/// receiver byte pump on the 85-1's V.24 interface).
+fn play_file_mode(machine: &mut Machine, block: &TapeBlock, frames: u64, flash: bool) -> bool {
     machine.bus.tape_play_session(vec![
         PlayItem {
             data: block.header_bytes.clone(),
             head: true,
-            flash: false,
+            flash,
         },
         PlayItem {
             data: block.body_bytes.clone(),
             head: false,
-            flash: false,
+            flash,
         },
     ]);
     for _ in 0..frames {
@@ -81,10 +94,7 @@ fn mgld_loads_a_played_file() {
     // Enter the load command; the monitor then waits for tape
     // activity (its EEBE loop spins until the leader tone appears).
     use Key::*;
-    type_command(
-        &mut machine,
-        &[M, G, L, D, Space, Digit0, Digit0, Enter],
-    );
+    type_command(&mut machine, &[M, G, L, D, Space, Digit0, Digit0, Enter]);
 
     assert!(
         play_file(&mut machine, &block, 900),
@@ -155,15 +165,27 @@ fn flash_block_read_contract() {
     machine.cpu.c = 1;
     machine.run_cycles(100);
 
-    assert_eq!(&machine.bus.memory.ram[0x2000..0x2005], &data, "data written");
+    assert_eq!(
+        &machine.bus.memory.ram[0x2000..0x2005],
+        &data,
+        "data written"
+    );
     assert!(machine.cpu.halted, "returned through the routine's RET");
     assert_eq!(machine.cpu.pc, 0x0501);
     assert_eq!(machine.cpu.b, checksum, "B = running checksum");
     assert_eq!(machine.cpu.a, 0);
     assert!(machine.cpu.flags.z, "checksum matched");
     assert!(!machine.cpu.flags.cy);
-    assert_eq!(u16::from_le_bytes([machine.cpu.l, machine.cpu.h]), 0x2000, "HL restored");
-    assert_eq!(u16::from_le_bytes([machine.cpu.e, machine.cpu.d]), 0xFFFF, "DE = 0xFFFF");
+    assert_eq!(
+        u16::from_le_bytes([machine.cpu.l, machine.cpu.h]),
+        0x2000,
+        "HL restored"
+    );
+    assert_eq!(
+        u16::from_le_bytes([machine.cpu.e, machine.cpu.d]),
+        0xFFFF,
+        "DE = 0xFFFF"
+    );
     assert!(!machine.bus.tape.flash_armed(), "block consumed");
     assert!(!machine.bus.tape.is_playing(), "session over");
 }
@@ -197,7 +219,11 @@ fn flash_load_with_breakpoints_set() {
     machine.cpu.c = 1;
     machine.run_cycles(100);
 
-    assert_eq!(&machine.bus.memory.ram[0x2000..0x2004], &data, "data written");
+    assert_eq!(
+        &machine.bus.memory.ram[0x2000..0x2004],
+        &data,
+        "data written"
+    );
     assert!(machine.cpu.halted, "returned through the routine's RET");
     assert_eq!(machine.breakpoint_hit(), None, "nothing tripped");
     assert_eq!(machine.cpu.pc, 0x0501);
@@ -229,7 +255,10 @@ fn flash_block_read_contract_check_only() {
     machine.cpu.c = 0;
     machine.run_cycles(100);
 
-    assert_eq!(machine.bus.memory.ram[0x2000], 0xEE, "check mode writes nothing");
+    assert_eq!(
+        machine.bus.memory.ram[0x2000], 0xEE,
+        "check mode writes nothing"
+    );
     assert!(machine.cpu.flags.z, "checksum matched");
     assert_eq!(machine.cpu.b, checksum);
 }
@@ -336,6 +365,63 @@ fn mgld_flash_loads_the_file() {
     assert!(!machine.bus.tape.is_playing());
 }
 
+/// The 85-1's V.24 tape interface: the deck drives the 8251's RxD and
+/// RxC lines directly (no IRPS/DSR carrier like the 85-2/3), and
+/// Monitor 1's MGLD reads the tape through the 8251's async receiver
+/// (mode 0xED: ×1 clock, 8 data bits, two stop bits). A realtime load
+/// must demodulate the deck's half-clock stream byte-perfect.
+#[test]
+fn mgld_monit1_loads_a_played_file() {
+    let mut machine = boot_model(Model::Pmd851);
+    let block = loadable_file();
+
+    use Key::*;
+    type_command(&mut machine, &[M, G, L, D, Space, Digit0, Digit0, Enter]);
+
+    assert!(
+        play_file(&mut machine, &block, 900),
+        "playback did not finish"
+    );
+    for _ in 0..60 {
+        machine.step_frame();
+    }
+
+    let ram = &machine.bus.memory.ram;
+    for (i, &expect) in block.content().iter().enumerate() {
+        assert_eq!(ram[0x1000 + i], expect, "RAM mismatch at +{i}");
+    }
+    assert!(!machine.bus.tape.is_playing());
+}
+
+/// The same 85-1 load through a flash session: the header block
+/// serializes for real (with the shortened leader), the body bytes
+/// are pumped straight into the 8251 receiver whenever Monitor 1's
+/// read loop comes to consume them — the V.24 counterpart of the
+/// 85-2/3's read-loop intercepts. The pump's refill patience spans
+/// the monitor's inter-block printing, so no byte is force-fed early.
+#[test]
+fn mgld_monit1_flash_loads_the_file() {
+    let mut machine = boot_model(Model::Pmd851);
+    let block = loadable_file();
+
+    use Key::*;
+    type_command(&mut machine, &[M, G, L, D, Space, Digit0, Digit0, Enter]);
+
+    assert!(
+        play_file_mode(&mut machine, &block, 900, true),
+        "flash playback did not finish"
+    );
+    for _ in 0..60 {
+        machine.step_frame();
+    }
+
+    let ram = &machine.bus.memory.ram;
+    for (i, &expect) in block.content().iter().enumerate() {
+        assert_eq!(ram[0x1000 + i], expect, "RAM mismatch at +{i}");
+    }
+    assert!(!machine.bus.tape.is_playing());
+}
+
 #[test]
 fn mgsv_records_a_save() {
     let mut machine = boot();
@@ -356,8 +442,8 @@ fn mgsv_records_a_save() {
     type_command(
         &mut machine,
         &[
-            M, G, S, V, Space, Digit0, Digit0, Space, Digit2, Digit0, Digit0, Digit0, Space, Digit2,
-            Digit0, Digit1, Digit0, Enter,
+            M, G, S, V, Space, Digit0, Digit0, Space, Digit2, Digit0, Digit0, Digit0, Space,
+            Digit2, Digit0, Digit1, Digit0, Enter,
         ],
     );
 
@@ -373,7 +459,12 @@ fn mgsv_records_a_save() {
     assert!(!recorded.is_empty(), "no blocks recorded");
     let mut tape = Tape::default();
     tape.append_ptp_stream(&recorded);
-    assert_eq!(tape.blocks.len(), 1, "one file expected: {:?}", tape.blocks.len());
+    assert_eq!(
+        tape.blocks.len(),
+        1,
+        "one file expected: {:?}",
+        tape.blocks.len()
+    );
 
     let saved = &tape.blocks[0];
     let h = saved.header.as_ref().expect("recorded block has a header");
@@ -414,8 +505,8 @@ fn mgsv_file_number_is_decimal() {
     type_command(
         &mut machine,
         &[
-            M, G, S, V, Space, Digit1, Digit7, Space, Digit2, Digit0, Digit0, Digit0, Space, Digit2,
-            Digit0, Digit1, Digit0, Enter,
+            M, G, S, V, Space, Digit1, Digit7, Space, Digit2, Digit0, Digit0, Digit0, Space,
+            Digit2, Digit0, Digit1, Digit0, Enter,
         ],
     );
     for _ in 0..900 {
@@ -464,7 +555,6 @@ fn mgld_file_number_is_decimal() {
     for _ in 0..60 {
         machine.step_frame();
     }
-    let loaded = (0..content.len())
-        .any(|i| machine.bus.memory.ram[0x1000 + i] == content[i]);
+    let loaded = (0..content.len()).any(|i| machine.bus.memory.ram[0x1000 + i] == content[i]);
     assert!(!loaded, "MGLD 43 must not load file number 0x43");
 }

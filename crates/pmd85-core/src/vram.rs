@@ -51,7 +51,11 @@ pub fn decode(mem: &Memory, profile: ColorProfile) -> Vec<u8> {
 }
 
 /// Decode into a reusable buffer; returns the buffer for convenience.
-pub fn decode_into<'a>(mem: &Memory, profile: ColorProfile, buf: &'a mut Vec<u8>) -> &'a mut Vec<u8> {
+pub fn decode_into<'a>(
+    mem: &Memory,
+    profile: ColorProfile,
+    buf: &'a mut Vec<u8>,
+) -> &'a mut Vec<u8> {
     buf.clear();
     buf.reserve(WIDTH * HEIGHT * 4);
     let palette = profile.palette();
@@ -110,7 +114,7 @@ mod tests {
         // bit 0 = leftmost pixel of the byte
         assert_eq!(px(&buf, 0, 0), [0x00, 0xE0, 0x30, 0xFF]); // green on
         assert_eq!(px(&buf, 1, 0), [0, 0, 0, 0xFF]); // off
-        // byte 1: full red group
+                                                     // byte 1: full red group
         for x in 6..12 {
             assert_eq!(px(&buf, x, 0), [0xE0, 0x30, 0x20, 0xFF], "x={x}");
         }

@@ -36,7 +36,10 @@ mod tests {
     fn the_embedded_png_makes_a_window_icon() {
         let image = image::load_from_memory(ICON_PNG).expect("the embedded PNG decodes");
         assert!(image.width() == image.height(), "the icon is square");
-        assert!(image.width() >= ICON_SIZE, "the icon is at least {ICON_SIZE}px");
+        assert!(
+            image.width() >= ICON_SIZE,
+            "the icon is at least {ICON_SIZE}px"
+        );
 
         let icon = window_icon().expect("a valid window icon");
         // The public API only Debug-prints it; round-trip through

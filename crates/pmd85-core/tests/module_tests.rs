@@ -57,12 +57,42 @@ fn type_str(machine: &mut Machine, s: &str) {
 fn char_to_key(c: char) -> Option<Key> {
     use Key::*;
     Some(match c.to_ascii_uppercase() {
-        'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E, 'F' => F, 'G' => G,
-        'H' => H, 'I' => I, 'J' => J, 'K' => K, 'L' => L, 'M' => M, 'N' => N,
-        'O' => O, 'P' => P, 'Q' => Q, 'R' => R, 'S' => S, 'T' => T, 'U' => U,
-        'V' => V, 'W' => W, 'X' => X, 'Y' => Y, 'Z' => Z,
-        '0' => Digit0, '1' => Digit1, '2' => Digit2, '3' => Digit3, '4' => Digit4,
-        '5' => Digit5, '6' => Digit6, '7' => Digit7, '8' => Digit8, '9' => Digit9,
+        'A' => A,
+        'B' => B,
+        'C' => C,
+        'D' => D,
+        'E' => E,
+        'F' => F,
+        'G' => G,
+        'H' => H,
+        'I' => I,
+        'J' => J,
+        'K' => K,
+        'L' => L,
+        'M' => M,
+        'N' => N,
+        'O' => O,
+        'P' => P,
+        'Q' => Q,
+        'R' => R,
+        'S' => S,
+        'T' => T,
+        'U' => U,
+        'V' => V,
+        'W' => W,
+        'X' => X,
+        'Y' => Y,
+        'Z' => Z,
+        '0' => Digit0,
+        '1' => Digit1,
+        '2' => Digit2,
+        '3' => Digit3,
+        '4' => Digit4,
+        '5' => Digit5,
+        '6' => Digit6,
+        '7' => Digit7,
+        '8' => Digit8,
+        '9' => Digit9,
         ' ' => Space,
         '\n' | '\r' => Enter,
         _ => return None,
@@ -96,7 +126,10 @@ fn check_auto_module(model: Model, module_file: &str, banner: std::ops::Range<us
         &module[12..12 + 0x100],
         "{model:?}: module payload not copied to RAM 0"
     );
-    assert!(!machine.cpu.halted, "{model:?}: CPU halted after module boot");
+    assert!(
+        !machine.cpu.halted,
+        "{model:?}: CPU halted after module boot"
+    );
 
     // BASIC banner on the console; nothing below it yet.
     assert!(
@@ -205,4 +238,51 @@ fn no_module_leaves_monitor_in_control() {
             machine.cpu.pc
         );
     }
+}
+
+/// A program for the module tests: six bytes at 0x1000 that store a
+/// marker at 0x2000 and halt. (`MVI A,5A / STA 2000 / HLT`.)
+fn marker_program() -> Vec<u8> {
+    vec![0x3E, 0x5A, 0x32, 0x00, 0x20, 0x76]
+}
+
+fn assert_marker_ran(machine: &Machine, payload: &[u8]) {
+    assert_eq!(
+        &machine.bus.memory.ram[0x1000..0x1000 + payload.len()],
+        payload,
+        "module payload not copied to 0x1000"
+    );
+    assert_eq!(machine.bus.memory.ram[0x2000], 0x5A, "marker not written");
+    assert!(machine.cpu.halted, "program did not run to its HLT");
+    assert_eq!(machine.cpu.pc, 0x1006, "halted at the wrong address");
+}
+
+#[test]
+fn generated_module_boots_and_runs_by_itself() {
+    // An image built by `make_rom_module` boots with no interaction:
+    // the monitor BIOS copies the header to its variable area,
+    // executes it, the header transfers the payload to 0x1000 and
+    // jumps to it.
+    let payload = marker_program();
+    for model in [Model::Pmd852, Model::Pmd852a, Model::Pmd853] {
+        let module = pmd85_core::module::make_rom_module(model, &payload, 0x1000, 0x1000);
+        let machine = boot(model, Some(module), 600);
+        assert_marker_ran(&machine, &payload);
+    }
+}
+
+#[test]
+fn generated_module_runs_on_85_1_through_basic_g() {
+    // Monitor 1 has no boot-time detection; the module is transferred
+    // by the `BASIC G` command, whose first stage (module offset 0 to
+    // RAM 0) lands the header at 0 and RST 0 executes it — the header's
+    // own second stage then moves the payload to 0x1000.
+    let payload = marker_program();
+    let module = pmd85_core::module::make_rom_module(Model::Pmd851, &payload, 0x1000, 0x1000);
+    let mut machine = boot(Model::Pmd851, Some(module), 200);
+    type_str(&mut machine, "BASIC G\n");
+    for _ in 0..600 {
+        machine.step_frame();
+    }
+    assert_marker_ran(&machine, &payload);
 }

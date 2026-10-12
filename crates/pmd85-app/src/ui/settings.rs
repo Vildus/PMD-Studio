@@ -43,12 +43,7 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
             ui.horizontal(|ui| {
                 ui.label("Model");
                 ui.separator();
-                for model in [
-                    Model::Pmd851,
-                    Model::Pmd852,
-                    Model::Pmd852a,
-                    Model::Pmd853,
-                ] {
+                for model in [Model::Pmd851, Model::Pmd852, Model::Pmd852a, Model::Pmd853] {
                     if ui
                         .selectable_label(cfg.model == model, model.name())
                         .on_hover_text(model_hint(model))
@@ -69,7 +64,11 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                     .selected_text(&monitor_label)
                     .width(COMBO_WIDTH)
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut monitor_label, default_monitor_label(cfg.model), default_monitor_label(cfg.model));
+                        ui.selectable_value(
+                            &mut monitor_label,
+                            default_monitor_label(cfg.model),
+                            default_monitor_label(cfg.model),
+                        );
                         for entry in app.catalog.monitors() {
                             let name = format!("{} ({})", entry.file_name, entry.size_label());
                             ui.selectable_value(&mut monitor_label, name.clone(), name);
@@ -79,7 +78,13 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                     None
                 } else {
                     // Strip the size suffix back to the file name.
-                    Some(monitor_label.split(" (").next().unwrap_or(&monitor_label).to_string())
+                    Some(
+                        monitor_label
+                            .split(" (")
+                            .next()
+                            .unwrap_or(&monitor_label)
+                            .to_string(),
+                    )
                 };
                 if ui
                     .button(format!("{} file\u{2026}", icon::FLOPPY_DISK))
@@ -127,7 +132,13 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                 cfg.rom_module = if module_label == "\u{2014} none \u{2014}" {
                     None
                 } else {
-                    Some(module_label.split(" (").next().unwrap_or(&module_label).to_string())
+                    Some(
+                        module_label
+                            .split(" (")
+                            .next()
+                            .unwrap_or(&module_label)
+                            .to_string(),
+                    )
                 };
                 if ui
                     .button(format!("{} file\u{2026}", icon::FLOPPY_DISK))
@@ -166,9 +177,11 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                     )
                     .on_hover_text("Changing the machine requires a restart");
                     ui.label(
-                        egui::RichText::new("Machine configuration changed \u{2014} restart required")
-                            .color(c(&theme.warn))
-                            .size(11.0),
+                        egui::RichText::new(
+                            "Machine configuration changed \u{2014} restart required",
+                        )
+                        .color(c(&theme.warn))
+                        .size(11.0),
                     );
                     if ui
                         .button(egui::RichText::new("Restart machine").strong())
@@ -288,10 +301,7 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                         {
                             let json = draft.to_json();
                             if let Err(e) = std::fs::write(&path, json) {
-                                app.notify(format!(
-                                    "cannot save theme {}: {e}",
-                                    path.display()
-                                ));
+                                app.notify(format!("cannot save theme {}: {e}", path.display()));
                             } else {
                                 app.notify(format!("theme saved to {}", path.display()));
                             }
@@ -346,10 +356,7 @@ fn draw_confirm_restart(ctx: &egui::Context, app: &mut App) {
             ui.label("will be lost.");
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui
-                    .button(egui::RichText::new("Restart").strong())
-                    .clicked()
-                {
+                if ui.button(egui::RichText::new("Restart").strong()).clicked() {
                     app.ui.confirm_reboot = None;
                     app.apply_config(cfg);
                 }

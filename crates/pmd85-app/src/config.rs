@@ -93,8 +93,7 @@ impl Default for AppSettings {
 /// provide a home directory (rare); settings are then simply not
 /// persisted.
 pub fn config_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "pmd85")
-        .map(|dirs| dirs.config_dir().to_path_buf())
+    directories::ProjectDirs::from("", "", "pmd85").map(|dirs| dirs.config_dir().to_path_buf())
 }
 
 /// Subdirectory holding custom theme files.
@@ -180,7 +179,8 @@ mod tests {
     use super::*;
 
     fn test_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pmd85-settings-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("pmd85-settings-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -212,9 +212,12 @@ mod tests {
             tape_warp: false,
             custom_titlebar: false,
             joystick_enabled: false,
-            gamepad_ports: [("00112233445566778899aabbccddeeff".to_string(), GamepadPort::Gpio1)]
-                .into_iter()
-                .collect(),
+            gamepad_ports: [(
+                "00112233445566778899aabbccddeeff".to_string(),
+                GamepadPort::Gpio1,
+            )]
+            .into_iter()
+            .collect(),
         };
         s.save(&dir);
         let loaded = AppSettings::load(&dir);

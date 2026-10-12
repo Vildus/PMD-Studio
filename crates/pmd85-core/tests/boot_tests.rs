@@ -52,14 +52,22 @@ fn check_booted_and_echo(model: Model, frames: u64) {
     );
 
     // Typing a key must echo a glyph into the dialog line.
-    let before: Vec<u8> = DIALOG_LINE.clone().map(|a| machine.bus.memory.ram[a]).collect();
+    let before: Vec<u8> = DIALOG_LINE
+        .clone()
+        .map(|a| machine.bus.memory.ram[a])
+        .collect();
     type_key(&mut machine, Key::A);
-    let after: Vec<u8> = DIALOG_LINE.clone().map(|a| machine.bus.memory.ram[a]).collect();
+    let after: Vec<u8> = DIALOG_LINE
+        .clone()
+        .map(|a| machine.bus.memory.ram[a])
+        .collect();
     assert_ne!(before, after, "{model:?}: dialog line did not change");
 
     // The glyph is drawn one character cell (6 pixels) wide in the first
     // column: bytes 0 of microrows 246-252.
-    let glyph: Vec<u8> = (0..8).map(|r| machine.bus.memory.ram[0xFD80 + r * 0x40]).collect();
+    let glyph: Vec<u8> = (0..8)
+        .map(|r| machine.bus.memory.ram[0xFD80 + r * 0x40])
+        .collect();
     assert!(
         glyph.iter().any(|&b| b != 0),
         "{model:?}: no 'A' glyph in the dialog line: {glyph:02x?}"
@@ -95,7 +103,11 @@ fn keypress_produces_speaker_click() {
         // A 4 kHz burst over a ~16 frame keypress: tens of edges at
         // most, each toggling the level, spaced by one 512-cycle tone
         // period (within instruction-timing jitter).
-        assert!(edges.len() < 200, "{model:?}: suspicious edge count {}", edges.len());
+        assert!(
+            edges.len() < 200,
+            "{model:?}: suspicious edge count {}",
+            edges.len()
+        );
         for pair in edges.windows(2) {
             assert_eq!(
                 pair[0].level, !pair[1].level,

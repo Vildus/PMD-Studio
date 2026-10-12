@@ -166,11 +166,7 @@ impl SpeakerOut {
             .ok()?;
 
         stream.play().ok()?;
-        log::info!(
-            "speaker output: {} Hz, {} channels",
-            sample_rate,
-            channels
-        );
+        log::info!("speaker output: {} Hz, {} channels", sample_rate, channels);
         Some(SpeakerOut {
             expander: EdgeExpander::new(sample_rate, 0, false),
             tape_expander: EdgeExpander::new(sample_rate, 0, false),
@@ -300,7 +296,11 @@ mod tests {
         exp.render_until(CYCLES_PER_FRAME * 100, &mut out);
         assert_eq!(out.len(), 96_000);
         exp.render_until(CYCLES_PER_FRAME, &mut out);
-        assert_eq!(out.len(), 96_000, "samples rendered for a restarted machine");
+        assert_eq!(
+            out.len(),
+            96_000,
+            "samples rendered for a restarted machine"
+        );
     }
 
     #[test]

@@ -96,11 +96,19 @@ pub fn disassemble(_addr: u16, bytes: &[u8]) -> (String, usize) {
         0x3F => "CMC".into(),
         // 01 DDD SSS: MOV dst,src (0x76 is HLT).
         0x40..=0x75 | 0x77..=0x7F => {
-            format!("MOV {},{}", REGS[((op >> 3) & 7) as usize], REGS[(op & 7) as usize])
+            format!(
+                "MOV {},{}",
+                REGS[((op >> 3) & 7) as usize],
+                REGS[(op & 7) as usize]
+            )
         }
         0x76 => "HLT".into(),
         // 10 OO O SSS: ALU ops with a register/memory operand.
-        0x80..=0xBF => format!("{} {}", ALU[((op >> 3) & 7) as usize], REGS[(op & 7) as usize]),
+        0x80..=0xBF => format!(
+            "{} {}",
+            ALU[((op >> 3) & 7) as usize],
+            REGS[(op & 7) as usize]
+        ),
         0xC1 => "POP B".into(),
         0xC3 => format!("JMP {:04X}", w()),
         0xC5 => "PUSH B".into(),
@@ -333,7 +341,10 @@ mod tests {
                     continue; // HLT, checked below
                 }
                 let (text, len) = at(op as u8);
-                assert_eq!(text, format!("MOV {},{}", regs[dst as usize], regs[src as usize]));
+                assert_eq!(
+                    text,
+                    format!("MOV {},{}", regs[dst as usize], regs[src as usize])
+                );
                 assert_eq!(len, 1);
             }
         }
@@ -342,7 +353,10 @@ mod tests {
         for group in 0..8u16 {
             for src in 0..8u16 {
                 let (text, len) = at((0x80 | group << 3 | src) as u8);
-                assert_eq!(text, format!("{} {}", alu[group as usize], regs[src as usize]));
+                assert_eq!(
+                    text,
+                    format!("{} {}", alu[group as usize], regs[src as usize])
+                );
                 assert_eq!(len, 1);
             }
         }

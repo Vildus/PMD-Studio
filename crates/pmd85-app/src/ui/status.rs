@@ -25,11 +25,15 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 };
                 let (led_rect, resp) =
                     ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                ui.painter().circle_filled(led_rect.center(), 5.0, led_color);
+                ui.painter()
+                    .circle_filled(led_rect.center(), 5.0, led_color);
                 resp.on_hover_text(led_note);
 
                 label(ui, "MODEL", &theme);
-                ui.label(value_text(&format!("PMD {}", app.config.model.name()), &theme));
+                ui.label(value_text(
+                    &format!("PMD {}", app.config.model.name()),
+                    &theme,
+                ));
 
                 label(ui, "MODULE", &theme);
                 ui.label(value_text(
@@ -50,7 +54,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 label(ui, "SPEED", &theme);
                 let emulated = app.emulated_fps();
                 let pct = emulated / crate::speed::FRAMES_PER_SEC * 100.0;
-                ui.label(value_text(&format!("{emulated:5.1} Hz  {pct:5.1}%"), &theme));
+                ui.label(value_text(
+                    &format!("{emulated:5.1} Hz  {pct:5.1}%"),
+                    &theme,
+                ));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Audio state.
@@ -59,22 +66,19 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                     } else if app.audio.is_none() {
                         (icon::SPEAKER_SLASH, c(&theme.text_weak), "no audio device")
                     } else if !app.wants_audio() {
-                        (icon::SPEAKER_X, c(&theme.text_weak), "audio suspended (speed \u{2260} 1\u{d7} or paused)")
+                        (
+                            icon::SPEAKER_X,
+                            c(&theme.text_weak),
+                            "audio suspended (speed \u{2260} 1\u{d7} or paused)",
+                        )
                     } else {
                         (icon::SPEAKER_HIGH, c(&theme.accent), "speaker live")
                     };
-                    ui.label(
-                        egui::RichText::new(glyph)
-                            .size(13.0)
-                            .color(color),
-                    )
-                    .on_hover_text(note);
+                    ui.label(egui::RichText::new(glyph).size(13.0).color(color))
+                        .on_hover_text(note);
 
                     // Render fps.
-                    ui.label(caption(
-                        &format!("UI {:5.1} fps", app.render_fps()),
-                        &theme,
-                    ));
+                    ui.label(caption(&format!("UI {:5.1} fps", app.render_fps()), &theme));
                 });
             });
         });
@@ -92,5 +96,7 @@ fn caption(text: &str, theme: &Theme) -> egui::RichText {
 }
 
 fn value_text(text: &str, theme: &Theme) -> egui::RichText {
-    egui::RichText::new(text).color(Theme::color(&theme.text)).size(11.0)
+    egui::RichText::new(text)
+        .color(Theme::color(&theme.text))
+        .size(11.0)
 }

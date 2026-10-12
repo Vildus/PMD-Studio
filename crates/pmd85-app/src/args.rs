@@ -38,16 +38,24 @@ pub fn parse() -> Args {
         match arg.as_str() {
             "--model" => {
                 let v = it.next().unwrap_or_else(|| missing_value("--model"));
-                args.model = Some(
-                    Model::from_str_loose(&v)
-                        .unwrap_or_else(|| panic!("unknown model {v:?} (85-1, 85-2, 85-2A, 85-3)")),
-                );
+                args.model =
+                    Some(Model::from_str_loose(&v).unwrap_or_else(|| {
+                        panic!("unknown model {v:?} (85-1, 85-2, 85-2A, 85-3)")
+                    }));
             }
-            "--monitor" => args.monitor = Some(it.next().unwrap_or_else(|| missing_value("--monitor"))),
+            "--monitor" => {
+                args.monitor = Some(it.next().unwrap_or_else(|| missing_value("--monitor")))
+            }
             "--rom-module" => {
                 args.rom_module = Some(it.next().unwrap_or_else(|| missing_value("--rom-module")))
             }
-            "--rom-dir" => args.rom_dir = Some(it.next().unwrap_or_else(|| missing_value("--rom-dir")).into()),
+            "--rom-dir" => {
+                args.rom_dir = Some(
+                    it.next()
+                        .unwrap_or_else(|| missing_value("--rom-dir"))
+                        .into(),
+                )
+            }
             "--mute" => args.mute = true,
             "--help" | "-h" => {
                 println!("{}", usage());
@@ -73,7 +81,13 @@ mod tests {
     #[test]
     fn usage_mentions_all_flags() {
         let usage = usage();
-        for flag in ["--model", "--monitor", "--rom-module", "--rom-dir", "--mute"] {
+        for flag in [
+            "--model",
+            "--monitor",
+            "--rom-module",
+            "--rom-dir",
+            "--mute",
+        ] {
             assert!(usage.contains(flag), "{flag} missing from usage");
         }
     }

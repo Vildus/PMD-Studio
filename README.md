@@ -15,7 +15,8 @@ banking), plus a cassette deck wired to the 8251 with flash-loading.
 | Crate | Contents |
 |---|---|
 | `crates/pmd85-core` | Pure emulation logic: i8080 CPU, memory maps, 8255/8253/8251 chips, keyboard matrix, VRAM decode, cassette tape images and deck, disassembler, save states, machine glue. No dependencies. |
-| `crates/pmd85-app` | Desktop application: winit window + wgpu blit of the 288x256 framebuffer, egui UI with dockable panels, 50 Hz real-time pacing, debugger, tape editor, speaker audio. |
+| `crates/pmd85-asm` | PMD 85 assembler: lenient monitor-style dialect, two passes, segments and symbol table, spanned diagnostics, round-trips the bundled ROM images bit-exactly. No dependencies. |
+| `crates/pmd85-app` | Desktop application: winit window + wgpu blit of the 288x256 framebuffer, egui UI with dockable panels, 50 Hz real-time pacing, debugger, tape editor, assembler IDE, speaker audio. |
 
 ## Running
 
@@ -78,6 +79,77 @@ never loses it; unchecking "follow PC" freezes the view for free
 navigation (scroll, goto). Breakpoints are session-only. The Memory
 panel is a live hex+ASCII dump of the full 64 KiB, read through the
 bus (so 85-3 banking is reflected), with region annotations and goto.
+
+## Assembler IDE
+
+The Project panel is a small IDE built around `pmd85-asm`, the
+bundled PMD 85 assembler (the same one the disassembler round-trips
+through, so highlighting and building agree). A *project* is a
+folder with a `project.json` manifest:
+
+```json
+{
+  "name": "my program",
+  "main": "main.asm",
+  "target": { "type": "tape", "name": "PROGRAM", "autostart": true }
+}
+```
+
+Every field has a default (`main.asm`, a `tape` target named
+`PROGRAM` with autostart), and the target is an open set — `tape`
+(a cassette file the monitor loads), `bin` (a raw image injected
+into RAM), and `rom-module` (a `.rmm` cartridge image).
+
+The panel opens a project folder (or creates one with a starter
+template), lists the `.asm`/`.inc` sources with dirty markers, and
+edits them in a syntax-highlighting editor whose colors come from
+the assembler's own lexer: mnemonics glow, literals are warm,
+comments dim. `Ctrl+B` builds the current buffers (unsaved edits
+included, `INCLUDE`s read from disk when not open); problems appear
+in the editor as red underlines and in the Problems panel as a
+clickable list that jumps to the offending spot. `Ctrl+S` saves,
+`Ctrl+F` opens find/replace (Enter/Shift+Enter cycle matches,
+matches are backlit in the editor), `Ctrl+G` goes to a line.
+
+Running a built program is one key, two ways, both through the
+Project tab:
+
+- **F5 — authentic.** The program is assembled into a cassette file,
+  the machine is reset to the monitor, the file goes on the
+  (flash-loading) tape and the monitor's `MGLD` command is typed
+  into the emulated keyboard for you. The monitor does the leader
+  sync, the header, the loading and the checksum — exactly as with a
+  real tape, just without the transfer time. With the default
+  autostart target the tape carries the classic PMD autorun trick
+  (the loader block at 0x7FD7 whose last word overwrites the block
+  reader's return slot at 0x7FFB), so the program starts by itself
+  once loaded. On the 85-3 the flow first types `JUMP FFF0`,
+  switching Monitor 3 into its 85-2 compatibility mode — its native
+  stack sits too low for the autorun slot.
+- **Ctrl+F5 — direct.** The image is written straight into RAM at
+  its address and the CPU starts at the `END` entry point. No
+  monitor, no tape: the fast inner loop while developing.
+
+With the `rom-module` target, F5 instead builds the program into a
+`.rmm` image — the 12-byte module header the monitor BIOS executes
+(the CALL into its own copy routine, the source/count/target
+parameter block and the entry jump) followed by the program —
+plugs it into the ROM-module connector and reboots: the monitor
+detects the module, transfers the payload to RAM through the
+connector's 8255 and runs it, exactly like a real cartridge. On
+the 85-1 (whose Monitor 1 has no boot-time detection) the app
+types the `BASIC G` transfer command instead.
+
+The assembler dialect is deliberately lenient: case-insensitive,
+labels with or without colon, `EQU` in any order, numbers as `123`,
+`0x1F`, `1FH`, `1010B` or `'A'`, the usual directives (`ORG`, `EQU`,
+`DB`/`DW`/`DS`, `INCBIN`, `ALIGN`, `INCLUDE`, `END`) with the
+classic aliases (`DEFB`, `WORD`, `RESB`, …), and expressions with
+`+ - * / % & | ^ ~ << >>`, `$` for the current address. Macros:
+`name MACRO p1, p2 ...` captures a body up to `ENDM`, invoked as
+`name arg1, arg2` with token-wise parameter substitution; `LOCAL`
+inside a body declares labels renamed per invocation so repeated
+expansions do not collide.
 
 ## Cassette tapes
 
@@ -202,7 +274,8 @@ BASIC modules), wgpu display, speaker audio, docking UI with layout
 persistence, themes, save states, speed control/turbo, cassette tape
 images with a full editor, playback and flash-loading, debugger
 (registers, disassembly, breakpoints, step/step-over/continue), memory
-dump, custom titlebar, desktop integration.
+dump, custom titlebar, desktop integration, assembler IDE (projects,
+highlighting editor, problems panel, authentic and direct run).
 
 Not yet: serial I/O beyond the cassette path (the 8251 serves the
 deck), disk image support.

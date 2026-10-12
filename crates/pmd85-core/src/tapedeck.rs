@@ -158,6 +158,17 @@ pub struct TapeDeck {
     queue: VecDeque<PlayItem>,
     /// The session plays with shortened flash leaders.
     session_flash: bool,
+    /// The original PMD 85-1 tape interface (GPMD85 `TIT_V1`): the
+    /// deck's data bit drives the 8251 RxD input and the bit clock
+    /// drives RxC, so the Monitor 1 ROM reads tape bytes through the
+    /// USART receiver. On the 85-2/3 (`v2`) the modulated signal
+    /// goes to DSR instead.
+    v1: bool,
+    /// The current block is a flash body: on V1 it stays in the
+    /// leader state and its bytes are pumped straight into the 8251
+    /// receiver as the monitor consumes them (GPMD85's flash-load
+    /// path for the V1 interface).
+    flash_body: bool,
 
     // ----- recording -----
     tx_state: TxState,
@@ -188,12 +199,15 @@ pub struct TapeDeck {
 
 impl Default for TapeDeck {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 
 impl TapeDeck {
-    pub fn new() -> Self {
+    /// A deck wired for the given tape interface: `v1` selects the
+    /// original PMD 85-1 cassette circuitry (RxD/RxC into the 8251
+    /// receiver); the default is the 85-2/3 IRPS interface (DSR).
+    pub fn new(v1: bool) -> Self {
         TapeDeck {
             cycle: 0,
             speed: 1.0,
@@ -208,6 +222,8 @@ impl TapeDeck {
             head: false,
             queue: VecDeque::new(),
             session_flash: false,
+            v1,
+            flash_body: false,
             tx_state: TxState::Ff,
             tx_counter: 2,
             tx_body_end: 0,
@@ -241,6 +257,7 @@ impl TapeDeck {
         self.pos = 0;
         self.queue.clear();
         self.session_flash = false;
+        self.flash_body = false;
         self.set_quiet(uart);
     }
 
@@ -270,6 +287,7 @@ impl TapeDeck {
         self.pos = 0;
         self.head = item.head;
         self.bit = true;
+        self.flash_body = false;
         if item.head {
             if fresh {
                 self.rx_state = RxState::Leader;
@@ -287,8 +305,18 @@ impl TapeDeck {
                 };
             }
         } else if item.flash {
-            self.rx_state = RxState::FlashData;
-            self.rx_tick = TC_FLASH_NO_BYTE;
+            if self.v1 {
+                // V1 flash body: stay in the leader state and pump
+                // the bytes into the 8251 receiver (GPMD85's V1
+                // flash-load path); the monitor's own read loop does
+                // the loading.
+                self.rx_state = RxState::Leader;
+                self.rx_tick = TC_BODY_LEADER;
+                self.flash_body = true;
+            } else {
+                self.rx_state = RxState::FlashData;
+                self.rx_tick = TC_FLASH_NO_BYTE;
+            }
         } else {
             self.rx_state = RxState::Leader;
             self.rx_tick = TC_BODY_LEADER;
@@ -440,14 +468,28 @@ impl TapeDeck {
     }
 
     fn half_clock(&mut self, uart: &mut I8251) {
-        // Drive the DSR line with the tape signal while playing.
-        if !matches!(self.rx_state, RxState::Idle | RxState::Gap) {
+        // Drive the tape signal while playing. On the IRPS (V2)
+        // interface the DSR line carries `clock XOR data`; on the
+        // 85-1's original interface the data bit goes to the 8251
+        // receiver's RxD input (and the bit clock to RxC below).
+        // A V1 flash body needs no signal: its bytes are pumped
+        // into the receiver directly.
+        if !matches!(self.rx_state, RxState::Idle | RxState::Gap) && !self.flash_body {
             let level = self.clk ^ self.bit;
             if level != self.dsr {
                 self.dsr = level;
-                uart.set_dsr(level);
+                if !self.v1 {
+                    uart.set_dsr(level);
+                }
                 self.monitor_edge(level);
             }
+            if self.v1 {
+                uart.set_rxd(self.bit);
+            }
+        }
+        // The V1 interface runs the 8251 off the tape bit clock.
+        if self.v1 {
+            uart.set_rxc(self.clk);
         } else if self.recording_tone_gate() {
             // Recording: an approximate 1200 Hz tone while the ROM is
             // actively writing blocks (silence between them).
@@ -496,6 +538,26 @@ impl TapeDeck {
                 }
             }
             RxState::Leader => {
+                if self.flash_body {
+                    // V1 flash body: pump a byte into the receiver as
+                    // soon as the monitor consumed the previous one.
+                    // The refill patience is the flash fallback
+                    // window rather than one byte time: the ROM
+                    // legitimately spends tens of byte-times between
+                    // blocks (printing file info, parsing headers),
+                    // and a byte-time force-feed would overrun the
+                    // receiver and lose bytes there.
+                    self.rx_tick -= 1;
+                    if self.pos < self.data.len() && (!uart.rx_ready() || self.rx_tick <= 0) {
+                        uart.feed_rx_byte(self.data[self.pos]);
+                        self.pos += 1;
+                        self.rx_tick = TC_FLASH_NO_BYTE;
+                        if self.pos == self.data.len() {
+                            self.next_block();
+                        }
+                    }
+                    return;
+                }
                 self.rx_tick -= 1;
                 if self.rx_tick == 0 {
                     self.rx_state = RxState::Start;
@@ -583,7 +645,10 @@ impl TapeDeck {
     }
 
     fn recording_tone_gate(&self) -> bool {
-        matches!(self.tx_state, TxState::Head | TxState::Body | TxState::ExtBody)
+        matches!(
+            self.tx_state,
+            TxState::Head | TxState::Body | TxState::ExtBody
+        )
     }
 
     // ----- recorder -----
@@ -637,8 +702,7 @@ impl TapeDeck {
                 if self.tx_counter == 65 {
                     // 63 header bytes collected: emit the header
                     // block prefix, then prepare the body block.
-                    let w_length =
-                        u16::from_le_bytes([self.buff[54], self.buff[55]]);
+                    let w_length = u16::from_le_bytes([self.buff[54], self.buff[55]]);
                     let len = w_length as usize + 2;
                     self.buff[0..2].copy_from_slice(&63u16.to_le_bytes());
                     self.buff.resize(67 + len, 0);
@@ -653,8 +717,7 @@ impl TapeDeck {
                 self.tx_counter += 1;
                 if self.tx_counter == self.tx_body_end {
                     // Complete file (header block + body block).
-                    self.stream
-                        .extend_from_slice(&self.buff[..self.tx_counter]);
+                    self.stream.extend_from_slice(&self.buff[..self.tx_counter]);
                     self.tx_state = TxState::WaitEb;
                     self.tx_counter = 2;
                     self.tx_tick = TC_EB_MAX;
@@ -680,8 +743,7 @@ impl TapeDeck {
     fn flush_ext_block(&mut self) {
         let payload = self.tx_counter - 2;
         self.buff[0..2].copy_from_slice(&(payload as u16).to_le_bytes());
-        self.stream
-            .extend_from_slice(&self.buff[..self.tx_counter]);
+        self.stream.extend_from_slice(&self.buff[..self.tx_counter]);
     }
 }
 
@@ -690,7 +752,7 @@ mod tests {
     use super::*;
 
     fn deck() -> (TapeDeck, I8251) {
-        (TapeDeck::new(), I8251::new())
+        (TapeDeck::new(false), I8251::new())
     }
 
     /// A one-block non-flash playback session over `data`.
@@ -876,8 +938,7 @@ mod tests {
         // cycles the 1x deck needs.
         d.tick(HALF_CLOCK as u64 * 100, &mut u);
         e.tick(HALF_CLOCK as u64 * 100, &mut v);
-        let full =
-            (TC_BODY_LEADER as f64 + 4.0 * 22.0 + TC_STOP_TAIL as f64 + 2.0) * HALF_CLOCK;
+        let full = (TC_BODY_LEADER as f64 + 4.0 * 22.0 + TC_STOP_TAIL as f64 + 2.0) * HALF_CLOCK;
         e.tick(full as u64, &mut v);
         assert!(!e.is_playing(), "2x deck finished");
         assert!(d.is_playing(), "1x deck still playing");

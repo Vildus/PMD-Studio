@@ -137,9 +137,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 // TURBO toggle: unthrottled, speaker muted.
                 let turbo = app.speed.turbo;
                 let turbo_label = if turbo {
-                    egui::RichText::new("TURBO")
-                        .strong()
-                        .color(c(&theme.warn))
+                    egui::RichText::new("TURBO").strong().color(c(&theme.warn))
                 } else {
                     egui::RichText::new("TURBO").color(c(&theme.text_weak))
                 };
@@ -154,8 +152,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 ui.separator();
 
                 // ---- debugger panels ----
-                let debugger = egui::Button::new(egui::RichText::new(icon::LIST_BULLETS).size(14.0))
-                    .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Debugger));
+                let debugger =
+                    egui::Button::new(egui::RichText::new(icon::LIST_BULLETS).size(14.0))
+                        .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Debugger));
                 if ui
                     .add(debugger)
                     .on_hover_text("Debugger: CPU, disassembly, breakpoints")
@@ -167,6 +166,25 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                     .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Memory));
                 if ui.add(mem).on_hover_text("Memory dump").clicked() {
                     dock::toggle_tab(&mut app.ui.dock, dock::Tab::Memory);
+                }
+                // The assembler IDE and its build problems.
+                let proj = egui::Button::new(egui::RichText::new(icon::FILE_CODE).size(14.0))
+                    .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Project));
+                if ui
+                    .add(proj)
+                    .on_hover_text("Assembler IDE: project, editor, build")
+                    .clicked()
+                {
+                    dock::toggle_tab(&mut app.ui.dock, dock::Tab::Project);
+                }
+                let problems = egui::Button::new(egui::RichText::new(icon::LIST_CHECKS).size(14.0))
+                    .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Problems));
+                if ui
+                    .add(problems)
+                    .on_hover_text("Build problems (errors, warnings)")
+                    .clicked()
+                {
+                    dock::toggle_tab(&mut app.ui.dock, dock::Tab::Problems);
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -190,10 +208,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                         dock::toggle_tab(&mut app.ui.dock, dock::Tab::Joystick);
                     }
                     // Cassette tape editor (dock tab).
-                    let tape = egui::Button::new(
-                        egui::RichText::new(icon::CASSETTE_TAPE).size(14.0),
-                    )
-                    .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Tape));
+                    let tape =
+                        egui::Button::new(egui::RichText::new(icon::CASSETTE_TAPE).size(14.0))
+                            .selected(dock::tab_visible(&app.ui.dock, dock::Tab::Tape));
                     if ui.add(tape).on_hover_text("Cassette tape").clicked() {
                         dock::toggle_tab(&mut app.ui.dock, dock::Tab::Tape);
                     }
@@ -202,7 +219,10 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                     let summary = if running {
                         format!("PMD {} \u{b7} {module}", app.config.model.name())
                     } else {
-                        format!("PMD {} \u{b7} {module} \u{b7} HELD", app.config.model.name())
+                        format!(
+                            "PMD {} \u{b7} {module} \u{b7} HELD",
+                            app.config.model.name()
+                        )
                     };
                     let state_color = if running {
                         c(&theme.accent)

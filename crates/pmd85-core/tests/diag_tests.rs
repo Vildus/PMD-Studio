@@ -17,7 +17,10 @@ impl CpmBus {
     fn new(program: &[u8]) -> Self {
         let mut mem = vec![0u8; 0x10000];
         mem[0x0100..0x0100 + program.len()].copy_from_slice(program);
-        CpmBus { mem, output: Vec::new() }
+        CpmBus {
+            mem,
+            output: Vec::new(),
+        }
     }
 }
 
@@ -130,10 +133,7 @@ fn diagnostic_tst8080() {
 #[test]
 fn diagnostic_cputest() {
     let out = run_diagnostic("CPUTEST.COM", 5_000_000_000);
-    assert!(
-        out.contains("CPU TESTS OK"),
-        "CPUTEST did not pass:\n{out}"
-    );
+    assert!(out.contains("CPU TESTS OK"), "CPUTEST did not pass:\n{out}");
 }
 
 /// The full exerciser takes a long time even natively; only run with
@@ -142,6 +142,9 @@ fn diagnostic_cputest() {
 #[ignore]
 fn diagnostic_8080exm() {
     let out = run_diagnostic("8080EXM.COM", 200_000_000_000);
-    assert!(out.contains("Tests complete"), "8080EXM did not finish:\n{out}");
+    assert!(
+        out.contains("Tests complete"),
+        "8080EXM did not finish:\n{out}"
+    );
     assert!(!out.contains("fail"), "8080EXM reported failure:\n{out}");
 }

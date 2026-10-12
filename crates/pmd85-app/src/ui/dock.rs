@@ -6,7 +6,7 @@
 
 use crate::app::App;
 use crate::ui::theme::Theme;
-use crate::ui::{debug, joystick, keyboard, screen, tape};
+use crate::ui::{debug, joystick, keyboard, problems, project, screen, tape};
 use egui::{Color32, CornerRadius, Stroke};
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, TabViewer};
@@ -31,6 +31,10 @@ pub enum Tab {
     Debugger,
     /// The memory dump.
     Memory,
+    /// The assembler IDE: sources, editor and build controls.
+    Project,
+    /// Build diagnostics, clickable through to the source.
+    Problems,
 }
 
 impl Tab {
@@ -43,6 +47,8 @@ impl Tab {
             Tab::Tape => "Cassette tape",
             Tab::Debugger => "Debugger",
             Tab::Memory => "Memory",
+            Tab::Project => "Project",
+            Tab::Problems => "Problems",
         }
     }
 }
@@ -191,6 +197,8 @@ impl TabViewer for Viewer<'_> {
             Tab::Tape => tape::ui(ui, self.app),
             Tab::Debugger => debug::debugger(ui, self.app),
             Tab::Memory => debug::memory(ui, self.app),
+            Tab::Project => project::ui(ui, self.app),
+            Tab::Problems => problems::ui(ui, self.app),
         };
     }
 

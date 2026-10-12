@@ -15,6 +15,7 @@ winresource = "0.1"
 
 [dependencies]
 pmd85-core = { workspace = true }
+pmd85-asm = { workspace = true }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "vulkan", "dx12", "metal", "wgsl"] }
 winit = "0.30"
 pollster = "0.3"
