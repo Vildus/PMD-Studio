@@ -1073,6 +1073,127 @@ mod tests {
         out.drop_without_applying_deltas();
     }
 
+    /// Dragging a selection past the editor's edge auto-scrolls it
+    /// (egui does not do this on its own): while the drag is held,
+    /// the view follows the pointer — even when the pointer then
+    /// stops moving — and it stops when the drag is released.
+    #[test]
+    fn dragging_a_selection_past_the_edge_auto_scrolls() {
+        let mut app = test_app();
+        let mut project = test_project("autoscroll");
+        project.files[0].text = "NOP\n".repeat(200);
+        app.project = Some(project);
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        let ctx = app.ctx.clone();
+        let screen = egui::vec2(1024.0, 768.0);
+        let base = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        // A frame with `events`; the clock advances a real 60 fps
+        // between frames (stable_dt drives the scroll speed).
+        let mut time = 0.0;
+        let mut frame = |events: Vec<egui::Event>, app: &mut App| -> egui::FullOutput {
+            time += 1.0 / 60.0;
+            let mut raw = base.clone();
+            raw.events = events;
+            raw.time = Some(time);
+            ctx.run_ui(raw, |ui| draw(app, ui))
+        };
+        // The top of the editor's painted content: it moves up as
+        // the editor scrolls.
+        let nop_top = |out: &egui::FullOutput| {
+            out.shapes
+                .iter()
+                .find_map(|clipped| {
+                    let egui::Shape::Text(text) = &clipped.shape else {
+                        return None;
+                    };
+                    text.galley
+                        .text()
+                        .contains("NOP")
+                        .then(|| clipped.shape.visual_bounding_rect().top())
+                })
+                .expect("editor text was painted")
+        };
+
+        // Let the layout settle; nothing scrolls on its own.
+        let out = frame(vec![], &mut app);
+        let settled = nop_top(&out);
+        out.drop_without_applying_deltas();
+        let out = frame(vec![], &mut app);
+        assert_eq!(nop_top(&out), settled, "nothing scrolls on its own");
+        out.drop_without_applying_deltas();
+
+        // Press inside the editor (near its visible top: the TextEdit
+        // is content-sized, so its center is far below the viewport),
+        // then drag below the viewport and hold the pointer there.
+        let editor = ctx
+            .read_response(egui::Id::new(("project-editor", "main.asm")))
+            .expect("the editor was drawn");
+        let p = egui::pos2(editor.rect.left() + 40.0, editor.rect.top() + 40.0);
+        frame(vec![egui::Event::PointerMoved(p)], &mut app).drop_without_applying_deltas();
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        )
+        .drop_without_applying_deltas();
+        frame(
+            vec![egui::Event::PointerMoved(egui::pos2(p.x, 760.0))],
+            &mut app,
+        )
+        .drop_without_applying_deltas();
+
+        // The pointer is now held still past the bottom edge: every
+        // following frame (with no events at all) keeps scrolling.
+        // The first of them still paints at the old offset — a
+        // scroll delta written during frame N moves the content
+        // from frame N+1 on.
+        let mut tops = Vec::new();
+        for _ in 0..4 {
+            let out = frame(vec![], &mut app);
+            tops.push(nop_top(&out));
+            out.drop_without_applying_deltas();
+        }
+        assert!(
+            tops.windows(2).all(|w| w[1] < w[0] - 0.5),
+            "the held-still drag keeps scrolling ({tops:?})"
+        );
+        assert!(
+            tops[3] < settled - 3.0,
+            "the drag past the edge scrolls the editor ({settled:.0} → {:?})",
+            tops[3]
+        );
+
+        // It stops when the drag is released (the release frame
+        // itself may still apply the last pending delta).
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: egui::pos2(p.x, 760.0),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        )
+        .drop_without_applying_deltas();
+        let mut tops = Vec::new();
+        for _ in 0..2 {
+            let out = frame(vec![], &mut app);
+            tops.push(nop_top(&out));
+            out.drop_without_applying_deltas();
+        }
+        assert_eq!(
+            tops[0], tops[1],
+            "the scroll stops with the drag ({tops:?})"
+        );
+    }
+
     #[test]
     fn paused_advance_does_not_emulate() {
         let mut app = test_app();

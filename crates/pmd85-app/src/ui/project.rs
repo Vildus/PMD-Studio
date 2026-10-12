@@ -672,7 +672,56 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
                     .translate(egui::vec2(0.0, (jump.line as f32 - 0.5) * row));
                 ui.scroll_to_rect(rect, Some(egui::Align::Center));
             }
-            response.inner
+
+            // Auto-scroll while drag-selecting past the viewport, as
+            // any text editor does: egui never does this on its own,
+            // so while the selection drag is held we scroll toward
+            // the pointer whenever it is outside the viewport. The
+            // speed grows with the overshoot (slow near the edge for
+            // precise stops, fast further out), and `stable_dt`
+            // keeps it frame-rate independent.
+            let editor_row = response.inner;
+            if editor_row.dragged() {
+                if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
+                    let vp = ui.clip_rect();
+                    if !vp.contains(p) {
+                        let over = egui::vec2(
+                            if p.x < vp.left() {
+                                p.x - vp.left()
+                            } else if p.x > vp.right() {
+                                p.x - vp.right()
+                            } else {
+                                0.0
+                            },
+                            if p.y < vp.top() {
+                                p.y - vp.top()
+                            } else if p.y > vp.bottom() {
+                                p.y - vp.bottom()
+                            } else {
+                                0.0
+                            },
+                        );
+                        let dt = ui.input(|i| i.stable_dt);
+                        let speed = egui::vec2(
+                            over.x.signum() * (over.x.abs() * 8.0 * dt).min(1200.0 * dt),
+                            over.y.signum() * (over.y.abs() * 8.0 * dt).min(1200.0 * dt),
+                        );
+                        // egui's scroll delta is inverted (negative
+                        // y moves the content up, i.e. scrolls down),
+                        // and it must not animate: a per-frame delta
+                        // through the easing path would crawl.
+                        ui.scroll_with_delta_animation(
+                            -speed,
+                            egui::style::ScrollAnimation::none(),
+                        );
+                        // Keep scrolling while the pointer is held
+                        // still past the edge (no input events
+                        // otherwise, so no repaints).
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
+            editor_row
         })
         .inner;
 
