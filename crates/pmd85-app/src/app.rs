@@ -560,6 +560,39 @@ pub(crate) enum WindowRequest {
     Close,
 }
 
+/// What happens once the unsaved-changes guard is resolved. `Some`
+/// in [`App::close_guard`] means the guard dialog is up: closing the
+/// project (or the app) with dirty buffers waits for the user to
+/// pick save / discard / cancel first.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum AfterClose {
+    /// Close the project, nothing else.
+    Project,
+    /// Close the project, then open a project folder.
+    Open(PathBuf),
+    /// Close the project, then create a project folder.
+    Create(PathBuf),
+    /// Exit the app.
+    Exit,
+}
+
+/// What a successful build produces for the project's target, and
+/// what the Export dialog and the `release/` folder write.
+#[derive(Debug)]
+pub(crate) enum Artifact {
+    /// The tape image's file blocks: the built program as one tape
+    /// file, or the autorun loader pair.
+    Tape {
+        /// Blocks in tape order, ready for [`pmd85_core::tape::save`].
+        blocks: Vec<pmd85_core::tape::TapeBlock>,
+    },
+    /// A `.rmm` ROM module image, with the entry it boots from.
+    Rom { module: Vec<u8>, entry: u16 },
+    /// The flat image (a raw `.bin`; the run paths inject it at its
+    /// assembler address).
+    Bin { image: Vec<u8> },
+}
+
 pub struct App {
     pub ctx: egui::Context,
     pub machine: Machine,
@@ -602,6 +635,14 @@ pub struct App {
 
     /// The open IDE project (sources + build), if any.
     pub project: Option<Project>,
+
+    /// The unsaved-changes guard: `Some` while its dialog is up (see
+    /// [`AfterClose`]).
+    pub(crate) close_guard: Option<AfterClose>,
+    /// Set when the guard's user answered and the exit may proceed;
+    /// the queued window close re-checks dirty buffers, this is the
+    /// "yes, really" flag.
+    pub(crate) exit_confirmed: bool,
 
     /// A keystroke sequence being typed into the emulated keyboard
     /// (see [`AutoType`]).
@@ -706,6 +747,8 @@ impl App {
             },
             gamepads: GamepadInput::new(),
             project: None,
+            close_guard: None,
+            exit_confirmed: false,
             auto_type: None,
             ui: UiState::default(),
             settings,
@@ -1036,6 +1079,11 @@ impl App {
     /// the Project tab and build once. Parse problems become a
     /// notification, never a failure to open.
     pub fn open_project(&mut self, dir: &Path) {
+        // Dirty buffers wait for the guard; the folder is stashed in
+        // the guard and opened once it resolves.
+        if self.guard_close(AfterClose::Open(dir.to_path_buf())) {
+            return;
+        }
         match Project::open(dir) {
             Ok(mut project) => {
                 project.build = Some(project.build());
@@ -1055,6 +1103,9 @@ impl App {
             .and_then(|n| n.to_str())
             .unwrap_or("project")
             .to_string();
+        if self.guard_close(AfterClose::Create(dir.to_path_buf())) {
+            return;
+        }
         match Project::create(dir, &name) {
             Ok(mut project) => {
                 project.build = Some(project.build());
@@ -1066,9 +1117,18 @@ impl App {
         }
     }
 
-    /// Close the project (buffers with unsaved edits are dropped;
-    /// the files on disk stay as they are).
+    /// Close the project. Buffers with unsaved edits raise the
+    /// unsaved-changes guard first ([`AfterClose::Project`]).
     pub fn close_project(&mut self) {
+        if self.guard_close(AfterClose::Project) {
+            return;
+        }
+        self.close_project_now();
+    }
+
+    /// Close the project unconditionally (buffers with unsaved edits
+    /// are dropped; the files on disk stay as they are).
+    fn close_project_now(&mut self) {
         if let Some(project) = &self.project {
             if project.files.iter().any(|f| f.dirty) {
                 self.notify("Project closed; unsaved edits discarded");
@@ -1079,7 +1139,89 @@ impl App {
         crate::ui::dock::hide_tab(&mut self.ui.dock, crate::ui::dock::Tab::Problems);
     }
 
-    /// Build the project (Ctrl+B): assemble the current buffers,
+    /// Whether closing needs the unsaved-changes guard: buffers with
+    /// unsaved edits. If it does, raise the guard for `after` and
+    /// return true (the caller must not act yet).
+    fn guard_close(&mut self, after: AfterClose) -> bool {
+        let dirty = self
+            .project
+            .as_ref()
+            .is_some_and(|p| p.files.iter().any(|f| f.dirty));
+        if dirty && self.close_guard.is_none() {
+            self.close_guard = Some(after);
+        }
+        dirty
+    }
+
+    /// A window/app close was requested (the system button, the
+    /// titlebar X). True when the app should exit now; false when
+    /// the unsaved-changes guard went up instead.
+    pub(crate) fn request_exit(&mut self) -> bool {
+        if self.exit_confirmed {
+            return true;
+        }
+        if self
+            .project
+            .as_ref()
+            .is_some_and(|p| p.files.iter().any(|f| f.dirty))
+        {
+            if self.close_guard.is_none() {
+                self.close_guard = Some(AfterClose::Exit);
+                self.ctx.request_repaint();
+            }
+            return false;
+        }
+        true
+    }
+
+    /// The guard dialog's decision: `save` writes every dirty buffer
+    /// first (a failed save keeps the guard up and reports why), then
+    /// the pending close happens. Returns true when the guard closed.
+    pub(crate) fn resolve_close_guard(&mut self, save: bool) -> bool {
+        let Some(after) = self.close_guard.take() else {
+            return true;
+        };
+        if save {
+            match self.project.as_mut().map(|p| p.save_all()) {
+                Some(Ok(saved)) if !saved.is_empty() => {
+                    self.notify(format!("Saved {} file(s)", saved.len()))
+                }
+                Some(Err(e)) => {
+                    // The guard stays up: the user can retry or
+                    // discard deliberately.
+                    self.notify(e);
+                    self.close_guard = Some(after);
+                    return false;
+                }
+                _ => {}
+            }
+        }
+        match after {
+            AfterClose::Project => self.close_project_now(),
+            AfterClose::Open(dir) => {
+                self.close_project_now();
+                self.open_project(&dir);
+            }
+            AfterClose::Create(dir) => {
+                self.close_project_now();
+                self.create_project(&dir);
+            }
+            AfterClose::Exit => {
+                // The queued window close goes through
+                // [`Self::request_exit`], which now passes.
+                self.exit_confirmed = true;
+                self.request_window(WindowRequest::Close);
+            }
+        }
+        true
+    }
+
+    /// The guard dialog's Cancel: nothing closes, nothing is saved.
+    pub(crate) fn cancel_close_guard(&mut self) {
+        self.close_guard = None;
+    }
+
+    /// Build the project: assemble the current buffers,
     /// keep the result for the problems panel and the run commands.
     /// Returns whether the build succeeded.
     pub fn build_project(&mut self) -> bool {
@@ -1103,7 +1245,7 @@ impl App {
         ok
     }
 
-    /// Save the active source buffer (Ctrl+S).
+    /// Save the active source buffer.
     pub fn save_project_file(&mut self) {
         let Some(project) = self.project.as_mut() else {
             return;
@@ -1114,31 +1256,33 @@ impl App {
         }
     }
 
-    /// Run the project (F5), the authentic way: the machine goes to
-    /// its booted state (the cached snapshot when possible — the
-    /// boot's memory test skipped — a real reset otherwise), the
-    /// built file plays into the (flash) tape deck and the monitor's
-    /// load command `MGLD` is typed into the emulated keyboard. The
-    /// monitor reads the header, flash-loads the blocks, checksums
-    /// and — with the autostart target — the loader block hijacks the
-    /// reader's return slot and runs the program, all for real.
-    pub fn run_project(&mut self) {
-        if !self.build_project() {
-            return;
-        }
-        let Some(project) = self.project.as_ref() else {
-            return;
-        };
-        let Some(build) = project.build.as_ref() else {
-            return;
-        };
-        let Some((base, image)) = build.asm.flat_image(0) else {
+    /// The current build's artifact for the configured target — what
+    /// the runs load, the Export dialog saves and the `release/`
+    /// folder holds. The same target constraints the runs check are
+    /// checked here (with the same notifications), so an artifact
+    /// that exists is one the run can use. `None` when nothing is
+    /// built, the build produced no code, or the target's
+    /// constraints are not met.
+    fn project_artifact(&mut self) -> Option<Artifact> {
+        let built = self
+            .project
+            .as_ref()
+            .and_then(|p| p.build.as_ref())
+            .and_then(|b| {
+                b.asm
+                    .flat_image(0)
+                    .map(|(base, image)| (base, image, b.asm.entry))
+            });
+        let Some((base, image, entry_hint)) = built else {
             self.notify("Nothing was assembled: no code emitted");
-            return;
+            return None;
         };
-        let entry_hint = build.asm.entry;
-        let target = project.manifest.target.clone();
-        match &target {
+        let target = self.project.as_ref().map(|p| p.manifest.target.clone())?;
+        let top = base.wrapping_add(image.len() as u16);
+        let entry = entry_hint
+            .filter(|&e| (base..top).contains(&e))
+            .unwrap_or(base);
+        match target {
             crate::project::Target::Tape { name, autostart } => {
                 // With autostart, the tape carries the wiki's autorun
                 // pair: a '?' file whose body is the small loader
@@ -1150,42 +1294,207 @@ impl App {
                 // the conventional '?' type — the block-type variable
                 // C136 is initialized to 0x3F at warm start and no
                 // command ever changes it.)
-                let blocks: Vec<pmd85_core::tape::TapeBlock> = if *autostart {
+                let blocks: Vec<pmd85_core::tape::TapeBlock> = if autostart {
                     // The loader lives at 0x7FD7..=0x7FFC; the program
                     // must not overlap it (it would be loaded over
                     // the loader's own return-slot word).
-                    let top = base.wrapping_add(image.len() as u16);
                     if base <= 0x7FFC && top > 0x7FD7 && base <= top {
                         self.notify(format!(
                             "Autostart needs 0x7FD7..0x7FFC free, but the program spans {base:04X}..{top:04X}"
                         ));
-                        return;
+                        return None;
                     }
-                    let entry = entry_hint
-                        .filter(|&e| (base..top).contains(&e))
-                        .unwrap_or(base);
                     let loader = pmd85_core::tape::autorun_loader(
                         self.machine.bus.model,
                         base,
                         entry,
                         image.len() as u16,
                     );
-                    match pmd85_core::tape::make_file(0, b'?', &name.clone(), 0x7FD7, &loader) {
+                    match pmd85_core::tape::make_file(0, b'?', &name, 0x7FD7, &loader) {
                         Ok(block) => vec![block, pmd85_core::tape::make_continuation(&image)],
                         Err(e) => {
                             self.notify(format!("Cannot build the tape file: {e}"));
-                            return;
+                            return None;
                         }
                     }
                 } else {
-                    match pmd85_core::tape::make_file(0, b'?', &name.clone(), base, &image) {
+                    match pmd85_core::tape::make_file(0, b'?', &name, base, &image) {
                         Ok(block) => vec![block],
                         Err(e) => {
                             self.notify(format!("Cannot build the tape file: {e}"));
-                            return;
+                            return None;
                         }
                     }
                 };
+                Some(Artifact::Tape { blocks })
+            }
+            crate::project::Target::RomModule => {
+                // The payload must live in the RAM below the
+                // monitors' boot-time stack (they run the header with
+                // return addresses just under 0x8000), and the image
+                // must fit the 32 KB module the connector addresses.
+                if top > 0x7FFB || base > top {
+                    self.notify(format!(
+                        "ROM module needs the program inside 0000h..7FFBh, but it spans {base:04X}..{top:04X}"
+                    ));
+                    return None;
+                }
+                if image.len() + pmd85_core::module::HEADER_LEN > 0x8000 {
+                    self.notify("ROM module images are limited to 32 KB");
+                    return None;
+                }
+                // On the 85-1 the header executes at RAM 0 (the BASIC
+                // transfer's first stage lands it there): the payload
+                // must not overwrite it mid-copy.
+                if self.machine.bus.model == pmd85_core::Model::Pmd851 && base < 0x10 {
+                    self.notify(
+                        "The 85-1's module transfer needs the program above 0010h (its header runs at RAM 0)",
+                    );
+                    return None;
+                }
+                let module = pmd85_core::module::make_rom_module(
+                    self.machine.bus.model,
+                    &image,
+                    base,
+                    entry,
+                );
+                Some(Artifact::Rom { module, entry })
+            }
+            crate::project::Target::Bin => Some(Artifact::Bin { image }),
+        }
+    }
+
+    /// The artifact plus the file name it is exported as: the
+    /// project's name (sanitized for a file system) with the
+    /// target's extension.
+    fn artifact_and_name(&mut self) -> Option<(String, Artifact)> {
+        let artifact = self.project_artifact()?;
+        let stem = self
+            .project
+            .as_ref()
+            .map(|p| {
+                let name: String = p
+                    .manifest
+                    .name
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+                    .collect();
+                if name.is_empty() {
+                    "program".to_string()
+                } else {
+                    name
+                }
+            })
+            .unwrap_or_else(|| "program".to_string());
+        let ext = match artifact {
+            Artifact::Tape { .. } => "ptp",
+            Artifact::Rom { .. } => "rmm",
+            Artifact::Bin { .. } => "bin",
+        };
+        Some((format!("{stem}.{ext}"), artifact))
+    }
+
+    /// Write the artifact to `path`, in the target's format.
+    fn write_artifact(&self, path: &Path, artifact: &Artifact) -> Result<(), String> {
+        match artifact {
+            Artifact::Tape { blocks } => {
+                let tape = pmd85_core::tape::Tape {
+                    blocks: blocks.clone(),
+                    warnings: Vec::new(),
+                };
+                pmd85_core::tape::save(path, &tape).map_err(|e| format!("{}: {e}", path.display()))
+            }
+            Artifact::Rom { module, .. } => {
+                std::fs::write(path, module).map_err(|e| format!("{}: {e}", path.display()))
+            }
+            Artifact::Bin { image, .. } => {
+                std::fs::write(path, image).map_err(|e| format!("{}: {e}", path.display()))
+            }
+        }
+    }
+
+    /// The Build button: assemble, and on success also write the
+    /// artifact into the project's `release/` folder (created on
+    /// demand) — a build you can hand around.
+    pub fn build_and_release_project(&mut self) -> bool {
+        let ok = self.build_project();
+        if ok {
+            if let Some(path) = self.write_release() {
+                self.notify(format!("Release: {}", path.display()));
+            }
+        }
+        ok
+    }
+
+    /// Write the current build's artifact into `<project>/release/`,
+    /// overwriting what is there. Returns the path written.
+    fn write_release(&mut self) -> Option<PathBuf> {
+        let (name, artifact) = self.artifact_and_name()?;
+        let dir = self.project.as_ref().map(|p| p.dir.join("release"))?;
+        let path = dir.join(name);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.notify(format!("{}: {e}", dir.display()));
+            return None;
+        }
+        match self.write_artifact(&path, &artifact) {
+            Ok(()) => Some(path),
+            Err(e) => {
+                self.notify(e);
+                None
+            }
+        }
+    }
+
+    /// Export…: build, then a save dialog writing the artifact — a
+    /// `.ptp` tape, a `.rmm` ROM module or a raw `.bin`, per the
+    /// project's target.
+    pub fn export_project(&mut self) {
+        if !self.build_project() {
+            return;
+        }
+        let Some((name, artifact)) = self.artifact_and_name() else {
+            return;
+        };
+        let (filter_name, ext): (&str, &str) = match &artifact {
+            Artifact::Tape { .. } => ("PMD tape image", "ptp"),
+            Artifact::Rom { .. } => ("PMD ROM module", "rmm"),
+            Artifact::Bin { .. } => ("Raw binary", "bin"),
+        };
+        if let Some(mut path) = rfd::FileDialog::new()
+            .add_filter(filter_name, &[ext])
+            .set_file_name(&name)
+            .save_file()
+        {
+            if path.extension().is_none() {
+                path = path.with_extension(ext);
+            }
+            match self.write_artifact(&path, &artifact) {
+                Ok(()) => self.notify(format!("Exported {}", path.display())),
+                Err(e) => self.notify(e),
+            }
+        }
+    }
+
+    /// Run the project, the authentic way: the machine goes to
+    /// its booted state (the cached snapshot when possible — the
+    /// boot's memory test skipped — a real reset otherwise), the
+    /// built file plays into the (flash) tape deck and the monitor's
+    /// load command `MGLD` is typed into the emulated keyboard. The
+    /// monitor reads the header, flash-loads the blocks, checksums
+    /// and — with the autostart target — the loader block hijacks the
+    /// reader's return slot and runs the program, all for real.
+    pub fn run_project(&mut self) {
+        if !self.build_project() {
+            return;
+        }
+        let Some(artifact) = self.project_artifact() else {
+            return;
+        };
+        // The tape arm needs the target's name back; the others
+        // carry everything in the artifact.
+        let target = self.project.as_ref().map(|p| p.manifest.target.clone());
+        match (artifact, target) {
+            (Artifact::Tape { blocks }, Some(crate::project::Target::Tape { name, autostart })) => {
                 // A clean machine at the monitor's command prompt for
                 // the typed MGLD to land: the cached booted state when
                 // possible (memory test skipped), a real reset
@@ -1222,7 +1531,7 @@ impl App {
                 // budget if it started during the boot.
                 use pmd85_core::keyboard::Key as key;
                 let mut script = vec![];
-                if *autostart && self.machine.bus.model == pmd85_core::Model::Pmd853 && !booted {
+                if autostart && self.machine.bus.model == pmd85_core::Model::Pmd853 && !booted {
                     // Monitor 3 keeps its stack at 0xBF00, out of the
                     // autorun return slot's (0x7FFB) reach — but its
                     // `JUMP FFF0` switches it into the 85-2
@@ -1270,42 +1579,17 @@ impl App {
                 self.auto_type = Some(AutoType::new(&script, session));
                 self.set_running(true);
             }
-            crate::project::Target::Bin => self.run_project_direct(),
-            crate::project::Target::RomModule => {
-                // The authentic module flow: build the image, plug it
-                // into the connector and reboot. The monitor BIOS
-                // detects the module and transfers the payload by
-                // itself; on the 85-1 it needs the `BASIC G` command
-                // instead (Monitor 1 has no boot-time detection).
+            // The direct run rebuilds and injects by itself.
+            (Artifact::Bin { .. }, _) => self.run_project_direct(),
+            (Artifact::Rom { module, entry }, _) => {
+                // The authentic module flow: the image is plugged
+                // into the connector and the machine rebooted. The
+                // monitor BIOS detects the module and transfers the
+                // payload by itself; on the 85-1 it needs the
+                // `BASIC G` command instead (Monitor 1 has no
+                // boot-time detection). The constraints were checked
+                // when the artifact was built.
                 let model = self.machine.bus.model;
-                let top = base.wrapping_add(image.len() as u16);
-                // The payload must live in the RAM below the
-                // monitors' boot-time stack (they run the header with
-                // return addresses just under 0x8000), and the image
-                // must fit the 32 KB module the connector addresses.
-                if top > 0x7FFB || base > top {
-                    self.notify(format!(
-                        "ROM module needs the program inside 0000h..7FFBh, but it spans {base:04X}..{top:04X}"
-                    ));
-                    return;
-                }
-                if image.len() + pmd85_core::module::HEADER_LEN > 0x8000 {
-                    self.notify("ROM module images are limited to 32 KB");
-                    return;
-                }
-                // On the 85-1 the header executes at RAM 0 (the BASIC
-                // transfer's first stage lands it there): the payload
-                // must not overwrite it mid-copy.
-                if model == pmd85_core::Model::Pmd851 && base < 0x10 {
-                    self.notify(
-                        "The 85-1's module transfer needs the program above 0010h (its header runs at RAM 0)",
-                    );
-                    return;
-                }
-                let entry = entry_hint
-                    .filter(|&e| (base..top).contains(&e))
-                    .unwrap_or(base);
-                let module = pmd85_core::module::make_rom_module(model, &image, base, entry);
                 self.ide_module = Some(module.clone());
                 self.machine.bus.memory.rom_module = Some(module);
                 self.machine.reset();
@@ -1330,10 +1614,13 @@ impl App {
                 self.set_running(true);
                 self.notify(format!("ROM module attached - booting from {entry:04X}"));
             }
+            // A tape artifact with a non-tape target cannot happen
+            // (the artifact is built from the target).
+            _ => {}
         }
     }
 
-    /// Run the project directly (Ctrl+F5): inject the built image
+    /// Run the project directly: inject the built image
     /// into RAM at its address and start the CPU at the entry point.
     /// No monitor, no tape — the fast inner loop for development.
     /// The machine starts from the cached booted state when possible

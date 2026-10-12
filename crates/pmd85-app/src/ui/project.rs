@@ -7,12 +7,13 @@
 //! same idea as the disassembly view). Line numbers sit in a
 //! separate column (numbers inside the layouter would break the
 //! cursor mapping), diagnostics get a red underline under their
-//! token, and the whole buffer is content-sized so the tab's own
-//! scroll area scrolls gutter and text together.
+//! token, and the editor scrolls inside its own scroll area — the
+//! toolbar, find bar and file tree stay put (the tab body itself
+//! does not scroll).
 //!
-//! Shortcuts (Ctrl+B/S/F/G, F5, Ctrl+F5) are consumed here, inside
-//! the tab's draw — they only exist while the Project tab is visible,
-//! so they never leak into the emulated keyboard.
+//! There are no keyboard shortcuts to speak of: the host keyboard is
+//! the emulated machine's (F5 is its K4 key, Ctrl its STOP key), so
+//! the IDE is driven entirely by its buttons.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -42,22 +43,83 @@ pub fn ui(ui: &mut egui::Ui, app: &mut App) {
         return;
     }
 
-    // Shortcuts first, before any child widget could eat the keys:
-    // they belong to the tab, not to whatever has focus.
-    shortcuts(ui.ctx(), app);
-
     let mut jump = app.ui.project_jump.take();
     goto_popup(ui.ctx(), app, &mut jump);
     target_popup(ui.ctx(), app);
+    file_popups(ui.ctx(), app);
 
     toolbar(ui, app, &theme);
     ui.add_space(4.0);
     find_bar(ui, app, &theme, &mut jump);
     ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        file_tree(ui, app, &theme);
-        editor(ui, app, &theme, jump);
-    });
+    // The file tree is a fixed-width left panel, not a member of a
+    // horizontal row: a row sizes its height to its tallest child, so
+    // the tree's content height would cap the editor. A panel always
+    // takes the full tab height; the editor then fills what is left.
+    egui::Panel::left(Id::new("project-files"))
+        .exact_size(150.0)
+        .resizable(false)
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false)
+        .show(ui, |ui| file_tree(ui, app, &theme));
+    editor(ui, app, &theme, jump);
+}
+
+/// The unsaved-changes guard, shown above everything (the app close
+/// raises it too, not just the project close).
+pub fn close_guard_modal(ctx: &egui::Context, app: &mut App) {
+    let Some(after) = app.close_guard.clone() else {
+        return;
+    };
+    let dirty: Vec<String> = app
+        .project
+        .iter()
+        .flat_map(|p| p.files.iter().filter(|f| f.dirty))
+        .map(|f| f.path.clone())
+        .collect();
+    let subject = match after {
+        crate::app::AfterClose::Exit => "the app",
+        _ => "the project",
+    };
+    let mut resolved = false;
+    let mut save = false;
+    let mut cancelled = false;
+    egui::Window::new("Unsaved changes")
+        .id(Id::new("project-close-guard"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} file(s) with unsaved edits:",
+                dirty.len().max(1)
+            ));
+            ui.label(
+                egui::RichText::new(dirty.join(", "))
+                    .monospace()
+                    .size(12.0)
+                    .weak(),
+            );
+            ui.label(format!("Close {} without saving them?", subject));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Save and close").clicked() {
+                    resolved = true;
+                    save = true;
+                }
+                if ui.button("Close without saving").clicked() {
+                    resolved = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    cancelled = true;
+                }
+            });
+        });
+    if resolved {
+        app.resolve_close_guard(save);
+    } else if cancelled {
+        app.cancel_close_guard();
+    }
 }
 
 /// The panel shown in place of the IDE when no project is open.
@@ -99,47 +161,13 @@ fn welcome(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
         ui.add_space(12.0);
         ui.label(
             egui::RichText::new(
-                "Build with Ctrl+B \u{b7} run authentic (monitor tape load) with F5 \u{b7} \n\
-                 run direct (RAM inject) with Ctrl+F5",
+                "Build assembles and writes the artifact to release/ \u{b7} Run\n\
+                 loads through the monitor \u{b7} Run direct injects into RAM",
             )
             .small()
             .color(Theme::color(&theme.text_weak)),
         );
     });
-}
-
-/// Tab-global shortcuts, consumed so no widget (or the emulated
-/// keyboard, when nothing is focused) sees them.
-fn shortcuts(ctx: &egui::Context, app: &mut App) {
-    use egui::{Key, KeyboardShortcut, Modifiers};
-    let ctrl = |key: Key| KeyboardShortcut::new(Modifiers::CTRL, key);
-    let consume = |s: &KeyboardShortcut| ctx.input_mut(|i| i.consume_shortcut(s));
-    if consume(&ctrl(Key::B)) {
-        app.build_project();
-    }
-    if consume(&ctrl(Key::S)) {
-        app.save_project_file();
-    }
-    if consume(&ctrl(Key::F)) {
-        if let Some(project) = app.project.as_mut() {
-            project.find.open = !project.find.open;
-            if project.find.open {
-                project.find.active = 0;
-                ctx.memory_mut(|m| m.request_focus(find_query_id()));
-            }
-        }
-    }
-    if consume(&ctrl(Key::G)) {
-        if let Some(project) = app.project.as_mut() {
-            project.goto_open = true;
-        }
-    }
-    if consume(&KeyboardShortcut::new(Modifiers::NONE, Key::F5)) {
-        app.run_project();
-    }
-    if consume(&KeyboardShortcut::new(Modifiers::CTRL, Key::F5)) {
-        app.run_project_direct();
-    }
 }
 
 /// The editor toolbar: build and run actions, then file actions, then
@@ -148,17 +176,32 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
     ui.horizontal_wrapped(|ui| {
         if ui
             .button(format!("{} Build", icon::STEPS))
-            .on_hover_text("Assemble the current buffers (Ctrl+B)")
+            .on_hover_text(
+                "Assemble the current buffers and write the artifact\n\
+                 (a .ptp / .rmm / .bin, per the target) into the\n\
+                 project's release/ folder",
+            )
             .clicked()
         {
-            app.build_project();
+            app.build_and_release_project();
+        }
+        if ui
+            .button(format!("{} Export\u{2026}", icon::UPLOAD_SIMPLE))
+            .on_hover_text(
+                "Assemble, then write the artifact wherever you pick\n\
+                 (a .ptp tape, a .rmm ROM module or a raw .bin, per\n\
+                 the target)",
+            )
+            .clicked()
+        {
+            app.export_project();
         }
         if ui
             .button(format!("{} Run", icon::PLAY))
             .on_hover_text(
                 "Build, then load through the monitor: the file goes on the\n\
                  (flash) tape and the monitor's MGLD command is typed for\n\
-                 you \u{2014} checksums and autorun run for real (F5)",
+                 you \u{2014} checksums and autorun run for real",
             )
             .clicked()
         {
@@ -168,8 +211,7 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .button(format!("{} Run direct", icon::SKIP_FORWARD))
             .on_hover_text(
                 "Build, then inject the image into RAM at its address and\n\
-                 start the CPU at the entry point \u{2014} no monitor, no tape\n\
-                 (Ctrl+F5)",
+                 start the CPU at the entry point \u{2014} no monitor, no tape",
             )
             .clicked()
         {
@@ -179,11 +221,12 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
         ui.separator();
 
         if ui
-            .button(format!("{} New file", icon::FILE_PLUS))
+            .button(format!("{} New file\u{2026}", icon::FILE_PLUS))
             .on_hover_text("Add an empty source file to the project")
             .clicked()
         {
             if let Some(project) = app.project.as_mut() {
+                project.new_open = true;
                 project.new_name.clear();
             }
         }
@@ -226,10 +269,32 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .unwrap_or_else(|| format!("{} Save", icon::FLOPPY_DISK));
         if ui
             .button(save_label)
-            .on_hover_text("Write the edited buffer to disk (Ctrl+S)")
+            .on_hover_text("Write the edited buffer to disk")
             .clicked()
         {
             app.save_project_file();
+        }
+        if ui
+            .button(icon::MAGNIFYING_GLASS.to_string())
+            .on_hover_text("Find and replace in the active buffer")
+            .clicked()
+        {
+            if let Some(project) = app.project.as_mut() {
+                project.find.open = !project.find.open;
+                if project.find.open {
+                    project.find.active = 0;
+                    ui.ctx().memory_mut(|m| m.request_focus(find_query_id()));
+                }
+            }
+        }
+        if ui
+            .button(icon::ARROW_BEND_UP_RIGHT.to_string())
+            .on_hover_text("Go to a line in the active buffer")
+            .clicked()
+        {
+            if let Some(project) = app.project.as_mut() {
+                project.goto_open = true;
+            }
         }
         if ui.button(format!("{} Close project", icon::X)).clicked() {
             app.close_project();
@@ -286,15 +351,18 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
     });
 }
 
-/// The file list and the new-file row.
+/// The file list, with its per-file context menu. Laid out inside
+/// the fixed-width left panel: the "sources" label on top, the file
+/// rows stacked below it; the column scrolls on its own when the
+/// files do not fit.
 fn file_tree(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
-    let mut notify: Option<String> = None;
-    {
-        let Some(project) = app.project.as_mut() else {
-            return;
-        };
-        ui.vertical(|ui| {
-            ui.set_width(150.0);
+    let Some(project) = app.project.as_mut() else {
+        return;
+    };
+    egui::ScrollArea::vertical()
+        .id_salt(Id::new("project-file-tree"))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
             ui.label(
                 egui::RichText::new("sources")
                     .small()
@@ -309,46 +377,204 @@ fn file_tree(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
                 };
                 let selected = project.active == Some(i);
                 let tooltip = format!("{}/{}", project.dir.display(), file.path);
-                if ui
+                let row = ui
                     .selectable_label(selected, egui::RichText::new(label).monospace().size(12.0))
-                    .on_hover_text(tooltip)
-                    .clicked()
-                {
+                    .on_hover_text(tooltip);
+                if row.clicked() {
                     project.active = Some(i);
                 }
-            }
-            // New file: name + add.
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                let edit = ui.add(
-                    TextEdit::singleline(&mut project.new_name)
-                        .id(Id::new("project-new-file"))
-                        .hint_text("name.asm")
-                        .desired_width(80.0),
-                );
-                let field_focused = ui
-                    .ctx()
-                    .memory(|m| m.has_focus(Id::new("project-new-file")));
-                let wants = ui
-                    .button(format!("{} add", icon::FILE_CODE))
-                    .on_hover_text("Create the file in the project directory")
-                    .clicked()
-                    || (field_focused
-                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                        && project.new_name.trim().ends_with(".asm"));
-                let _ = edit;
-                if wants {
-                    let name = project.new_name.trim().to_string();
-                    match project.new_file(&name) {
-                        Ok(()) => project.new_name.clear(),
-                        Err(e) => notify = Some(e),
+                row.context_menu(|ui| {
+                    if ui
+                        .button(format!("{} New file\u{2026}", icon::FILE_PLUS))
+                        .clicked()
+                    {
+                        project.new_open = true;
+                        project.new_name.clear();
+                        ui.close();
                     }
-                }
-            });
+                    if ui
+                        .button(format!("{} Rename\u{2026}", icon::PENCIL_SIMPLE))
+                        .clicked()
+                    {
+                        project.rename = Some(i);
+                        project.rename_name = project.files[i].path.clone();
+                        ui.close();
+                    }
+                    if ui
+                        .button(format!("{} Delete\u{2026}", icon::TRASH))
+                        .clicked()
+                    {
+                        project.remove = Some(i);
+                        ui.close();
+                    }
+                });
+            }
         });
+}
+
+/// The file popups: new file, rename, delete. Small dialogs driven
+/// by the project state; the actions are staged and applied after
+/// the project borrow ends (they may want to notify).
+fn file_popups(ctx: &egui::Context, app: &mut App) {
+    let danger = Theme::color(&app.active_theme_data().danger);
+
+    // Staged dialog outcomes.
+    let mut create: Option<String> = None;
+    let mut rename: Option<(usize, String)> = None;
+    let mut delete: Option<usize> = None;
+    let mut close = [false; 3]; // [new, rename, delete]
+
+    {
+        let Some(project) = app.project.as_mut() else {
+            return;
+        };
+
+        if project.new_open {
+            let mut open = true;
+            egui::Window::new("New file")
+                .id(Id::new("project-new-file-dialog"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let edit = ui.add(
+                        TextEdit::singleline(&mut project.new_name)
+                            .id(Id::new("project-new-file-input"))
+                            .hint_text("name.asm")
+                            .desired_width(140.0),
+                    );
+                    if ui.button("Create").clicked()
+                        || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        create = Some(project.new_name.trim().to_string());
+                    }
+                });
+            close[0] = !open;
+        }
+
+        if let Some(index) = project.rename {
+            let mut open = true;
+            egui::Window::new("Rename file")
+                .id(Id::new("project-rename-dialog"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    let path = project
+                        .files
+                        .get(index)
+                        .map(|f| f.path.clone())
+                        .unwrap_or_default();
+                    ui.label(
+                        egui::RichText::new(format!("{}/{}", project.dir.display(), path))
+                            .weak()
+                            .small(),
+                    );
+                    let edit = ui.add(
+                        TextEdit::singleline(&mut project.rename_name)
+                            .id(Id::new("project-rename-input"))
+                            .desired_width(140.0),
+                    );
+                    if ui.button("Rename").clicked()
+                        || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                    {
+                        rename = Some((index, project.rename_name.trim().to_string()));
+                    }
+                });
+            close[1] = !open;
+        }
+
+        if let Some(index) = project.remove {
+            let mut open = true;
+            let path = project
+                .files
+                .get(index)
+                .map(|f| f.path.clone())
+                .unwrap_or_default();
+            egui::Window::new("Delete file")
+                .id(Id::new("project-remove-dialog"))
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Delete {}/{} from disk?",
+                        project.dir.display(),
+                        path
+                    ));
+                    ui.label(
+                        egui::RichText::new("The file will be gone; this is not undoable.")
+                            .weak()
+                            .small(),
+                    );
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(egui::RichText::new("Delete").color(danger))
+                            .clicked()
+                        {
+                            delete = Some(index);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close[2] = true;
+                        }
+                    });
+                });
+            close[2] |= !open;
+        }
     }
-    if let Some(e) = notify {
-        app.notify(e);
+
+    if let Some(name) = create {
+        let outcome = app.project.as_mut().map(|p| p.new_file(&name));
+        match outcome {
+            Some(Ok(())) => {
+                if let Some(p) = app.project.as_mut() {
+                    p.new_open = false;
+                }
+            }
+            Some(Err(e)) => app.notify(e),
+            None => {}
+        }
+    } else if close[0] {
+        if let Some(p) = app.project.as_mut() {
+            p.new_open = false;
+        }
+    }
+
+    if let Some((index, name)) = rename {
+        let outcome = app.project.as_mut().map(|p| p.rename_file(index, &name));
+        match outcome {
+            Some(Ok(path)) => {
+                if let Some(p) = app.project.as_mut() {
+                    p.rename = None;
+                }
+                app.notify(format!("Renamed to {path}"));
+            }
+            Some(Err(e)) => app.notify(e),
+            None => {}
+        }
+    } else if close[1] {
+        if let Some(p) = app.project.as_mut() {
+            p.rename = None;
+        }
+    }
+
+    if let Some(index) = delete {
+        let outcome = app.project.as_mut().map(|p| p.remove_file(index));
+        match outcome {
+            Some(Ok(path)) => {
+                if let Some(p) = app.project.as_mut() {
+                    p.remove = None;
+                }
+                app.notify(format!("Deleted {path}"));
+            }
+            Some(Err(e)) => app.notify(e),
+            None => {}
+        }
+    } else if close[2] {
+        if let Some(p) = app.project.as_mut() {
+            p.remove = None;
+        }
     }
 }
 
@@ -403,46 +629,58 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
             ui.ctx().fonts_mut(|f| f.layout_job(job))
         };
 
-    let response = ui.horizontal(|ui| {
-        // The gutter and the editor form one row: no spacing between
-        // them, the same font, and the TextEdit's own top frame
-        // padding (its default margin is 2 px) added above the line
-        // numbers so the rows line up.
-        ui.spacing_mut().item_spacing.x = 0.0;
-        let width = gutter_width(ui, &font_id, lines);
-        ui.vertical(|ui| {
-            ui.set_width(width);
-            ui.add_space(2.0);
-            gutter(ui, &font_id, lines, theme);
-        });
-        ui.add(
-            TextEdit::multiline(&mut text)
-                .id(id)
-                .font(egui::TextStyle::Monospace)
-                .desired_rows(lines)
-                .desired_width(f32::INFINITY)
-                .lock_focus(true)
-                .layouter(&mut layouter),
-        )
-    });
+    // The editor scrolls inside its own area (the tab body does not
+    // scroll): gutter and text scroll together, the toolbar, find
+    // bar and file tree stay put.
+    let response = egui::ScrollArea::both()
+        .id_salt(("project-editor-scroll", &path))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // The gutter and the editor form one row: no spacing between
+            // them, the same font, and the TextEdit's own top frame
+            // padding (its default margin is 2 px) added above the line
+            // numbers so the rows line up.
+            let response = ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let width = gutter_width(ui, &font_id, lines);
+                ui.vertical(|ui| {
+                    ui.set_width(width);
+                    ui.add_space(2.0);
+                    gutter(ui, &font_id, lines, theme);
+                });
+                ui.add(
+                    TextEdit::multiline(&mut text)
+                        .id(id)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_rows(lines)
+                        .desired_width(f32::INFINITY)
+                        .lock_focus(true)
+                        .layouter(&mut layouter),
+                )
+            });
 
-    let changed = response.inner.changed();
+            // A pending jump: cursor onto the spot, view scrolled to
+            // it (this ui sits inside the scroll area, so the scroll
+            // it asks for is the editor's own).
+            if let Some(jump) = jump.filter(|j| j.file == path) {
+                let char_pos = char_offset(&text, jump.line, jump.col);
+                set_cursor(ui.ctx(), id, char_pos);
+                let row = ui.ctx().fonts_mut(|f| f.row_height(&font_id));
+                let rect = response
+                    .inner
+                    .rect
+                    .translate(egui::vec2(0.0, (jump.line as f32 - 0.5) * row));
+                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+            }
+            response.inner
+        })
+        .inner;
+
+    let changed = response.changed();
     let file = &mut project.files[idx];
     file.text = text;
     if changed {
         file.dirty = true;
-    }
-
-    // A pending jump: cursor onto the spot, view scrolled to it.
-    if let Some(jump) = jump.filter(|j| j.file == path) {
-        let char_pos = char_offset(&file.text, jump.line, jump.col);
-        set_cursor(ui.ctx(), id, char_pos);
-        let row = ui.ctx().fonts_mut(|f| f.row_height(&font_id));
-        let rect = response
-            .inner
-            .rect
-            .translate(egui::vec2(0.0, (jump.line as f32 - 0.5) * row));
-        ui.scroll_to_rect(rect, Some(egui::Align::Center));
     }
 }
 
@@ -576,7 +814,7 @@ fn find_bar(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: &mut Option<J
         }
         if ui
             .button(egui::RichText::new(icon::X).size(12.0))
-            .on_hover_text("Close the find bar (Ctrl+F)")
+            .on_hover_text("Close the find bar")
             .clicked()
         {
             project.find.open = false;

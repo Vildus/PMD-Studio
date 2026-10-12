@@ -94,6 +94,9 @@ pub fn draw(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     settings::draw(&ctx, app);
     draw_notifications(&ctx, app);
+    // The unsaved-changes guard sits above everything: it can be
+    // raised by the window close, not just from the Project tab.
+    project::close_guard_modal(&ctx, app);
 }
 
 /// Transient error popups, bottom-right.
@@ -363,6 +366,30 @@ mod tests {
                     p.target_open = true;
                     p.find.open = true;
                     a.project = Some(p);
+                }),
+            ),
+            (
+                "project-file-dialogs",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    let mut p = test_project("dialogs");
+                    p.new_open = true;
+                    p.new_name = "x.asm".into();
+                    p.rename = Some(0);
+                    p.rename_name = "main2.asm".into();
+                    p.remove = Some(0);
+                    a.project = Some(p);
+                }),
+            ),
+            (
+                "project-dirty-guard",
+                Box::new(|a| {
+                    crate::ui::dock::show_tab(&mut a.ui.dock, crate::ui::dock::Tab::Project);
+                    let mut p = test_project("guard-frame");
+                    p.files[0].text = "MVI A,1\n".to_string();
+                    p.files[0].dirty = true;
+                    a.project = Some(p);
+                    a.close_guard = Some(crate::app::AfterClose::Project);
                 }),
             ),
             (
@@ -663,6 +690,387 @@ mod tests {
         );
         // Drained: a second take must not repeat them.
         assert!(app.take_window_requests().is_empty());
+    }
+
+    /// A project kept on disk (unlike [`test_project`], which deletes
+    /// its directory): for the tests that save, close and reopen it.
+    fn disk_project(name: &str) -> crate::project::Project {
+        let dir = std::env::temp_dir().join(format!(
+            "pmd85-ui-disk-project-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        crate::project::Project::create(&dir, name).unwrap()
+    }
+
+    /// The Build button writes the artifact into the project's
+    /// release/ folder, in the target's format, byte-identical to
+    /// what the run path loads: the autostart tape pair (loader at
+    /// 0x7FD7 + the program), a `.rmm` ROM module, or the raw image.
+    #[test]
+    fn build_writes_the_release_artifact_per_target() {
+        // ---- tape (the default target) ----
+        let mut app = test_app();
+        let mut project = disk_project("rel");
+        project.manifest.name = "Rel Name!".to_string();
+        let dir = project.dir.clone();
+        app.project = Some(project);
+        assert!(app.build_and_release_project());
+
+        let release = dir.join("release");
+        assert!(release.is_dir(), "the release folder exists");
+        let tape = pmd85_core::tape::load(&release.join("RelName.ptp")).unwrap();
+        let (base, image) = app
+            .project
+            .as_ref()
+            .unwrap()
+            .build
+            .as_ref()
+            .unwrap()
+            .asm
+            .flat_image(0)
+            .unwrap();
+        assert_eq!(tape.blocks.len(), 2, "the autostart pair");
+        assert_eq!(
+            tape.blocks[0].header.as_ref().unwrap().name_str(),
+            "PROGRAM",
+            "the tape file's name (the target's, not the project's)"
+        );
+        assert_eq!(tape.blocks[0].header.as_ref().unwrap().start, 0x7FD7);
+        assert_eq!(
+            tape.blocks[1].header, None,
+            "the program rides as a headerless continuation"
+        );
+        assert_eq!(
+            tape.blocks[1].body_bytes,
+            pmd85_core::tape::make_continuation(&image).body_bytes,
+            "the continuation holds the built image"
+        );
+        assert!(!base.to_string().is_empty()); // (base read; the image is the point)
+
+        // ---- ROM module ----
+        app.project.as_mut().unwrap().manifest.target = crate::project::Target::RomModule;
+        assert!(app.build_and_release_project());
+        let module_bytes = std::fs::read(release.join("RelName.rmm")).unwrap();
+        let model = app.machine.bus.model;
+        assert_eq!(
+            module_bytes,
+            pmd85_core::module::make_rom_module(model, &image, base, 0x1000),
+            "the .rmm is the module the run would attach"
+        );
+
+        // ---- raw binary ----
+        app.project.as_mut().unwrap().manifest.target = crate::project::Target::Bin;
+        assert!(app.build_and_release_project());
+        assert_eq!(
+            std::fs::read(release.join("RelName.bin")).unwrap(),
+            image,
+            "the .bin is the flat image"
+        );
+
+        // The release folder never showed up among the sources.
+        let paths: Vec<String> = crate::project::Project::open(&dir)
+            .unwrap()
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        assert_eq!(paths, ["main.asm"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The unsaved-changes guard: closing a project with dirty buffers
+    /// waits for the user; save-and-close writes them; a plain close
+    /// discards them; cancel aborts everything; a clean project closes
+    /// without any guard.
+    #[test]
+    fn close_guard_saves_or_discards_dirty_buffers() {
+        let mut app = test_app();
+        let mut project = disk_project("guard");
+        let dir = project.dir.clone();
+        project.files[0].text = "MVI A,9\nHLT\n".to_string();
+        project.files[0].dirty = true;
+        app.project = Some(project);
+
+        // Close with dirty buffers: the guard goes up, nothing closes.
+        app.close_project();
+        assert!(app.close_guard.is_some(), "the guard is up");
+        assert!(app.project.is_some(), "the project is still open");
+        // Cancel: everything stays.
+        app.cancel_close_guard();
+        assert!(app.close_guard.is_none());
+        assert!(app.project.is_some());
+
+        // Save and close: the buffer is written, the project closed.
+        app.close_project();
+        assert!(app.resolve_close_guard(true), "the guard resolved");
+        assert!(app.close_guard.is_none());
+        assert!(app.project.is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main.asm")).unwrap(),
+            "MVI A,9\nHLT\n"
+        );
+
+        // A clean project closes without any guard.
+        app.open_project(&dir);
+        assert!(app.project.is_some());
+        app.close_project();
+        assert!(app.close_guard.is_none(), "nothing dirty, no guard");
+        assert!(app.project.is_none());
+
+        // Close without saving: the file on disk keeps the old text.
+        app.open_project(&dir);
+        app.project.as_mut().unwrap().files[0].text = "NOP\n".to_string();
+        app.project.as_mut().unwrap().files[0].dirty = true;
+        app.close_project();
+        assert!(app.resolve_close_guard(false));
+        assert!(app.project.is_none());
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main.asm")).unwrap(),
+            "MVI A,9\nHLT\n",
+            "the discard kept the disk text"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The guard holds a project switch too: opening a project over
+    /// dirty buffers waits, then switches (with or without saving).
+    #[test]
+    fn close_guard_holds_a_project_switch() {
+        let mut app = test_app();
+        let mut a = disk_project("switch-a");
+        let dir_a = a.dir.clone();
+        a.files[0].text = "MVI A,1\n".to_string();
+        a.files[0].dirty = true;
+        let b = disk_project("switch-b");
+        let dir_b = b.dir.clone();
+        app.project = Some(a);
+
+        app.open_project(&dir_b);
+        assert!(
+            matches!(app.close_guard, Some(crate::app::AfterClose::Open(_))),
+            "the switch waits for the guard"
+        );
+        assert_eq!(
+            app.project.as_ref().unwrap().dir,
+            dir_a,
+            "the first project is still open"
+        );
+
+        // Discard and switch: no save, the new project opens.
+        assert!(app.resolve_close_guard(false));
+        assert_eq!(app.project.as_ref().unwrap().dir, dir_b);
+        assert!(
+            std::fs::read_to_string(dir_a.join("main.asm"))
+                .unwrap()
+                .starts_with("; Fills the PMD 85 screen"),
+            "nothing was saved"
+        );
+        let _ = std::fs::remove_dir_all(&dir_a);
+        let _ = std::fs::remove_dir_all(&dir_b);
+    }
+
+    /// The window close goes through the same guard: dirty buffers
+    /// hold the exit, the dialog's answer confirms it.
+    #[test]
+    fn request_exit_guards_dirty_buffers() {
+        let mut app = test_app();
+        assert!(app.request_exit(), "a clean app exits at once");
+
+        let mut project = disk_project("exit");
+        let dir = project.dir.clone();
+        project.files[0].text = "NOP\n".to_string();
+        project.files[0].dirty = true;
+        app.project = Some(project);
+        assert!(!app.request_exit(), "dirty buffers hold the exit");
+        assert_eq!(app.close_guard, Some(crate::app::AfterClose::Exit));
+
+        // Cancel: still dirty, still holding.
+        app.cancel_close_guard();
+        assert!(!app.request_exit());
+
+        // Save and exit: the save happened, the close is queued and
+        // confirmed — the queued close passes request_exit.
+        assert!(app.resolve_close_guard(true));
+        assert!(app.exit_confirmed);
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Close]
+        );
+        assert!(app.request_exit(), "the confirmed exit passes");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("main.asm")).unwrap(),
+            "NOP\n",
+            "the guard saved before exiting"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The IDE has no keyboard shortcuts: with the Project tab
+    /// visible, F5 / Ctrl+S / Ctrl+B run, save and build nothing —
+    /// the host keyboard belongs to the emulated machine (F5 is its
+    /// K4 key, Ctrl its STOP key).
+    #[test]
+    fn no_host_shortcuts_in_the_project_tab() {
+        let mut app = test_app();
+        let mut project = test_project("no-shortcuts");
+        project.files[0].text = "MVI A,1\nHLT\n".to_string();
+        project.files[0].dirty = true;
+        app.project = Some(project);
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        app.set_running(false);
+
+        let frame = |app: &mut App, key: egui::Key, modifiers: egui::Modifiers| {
+            let ctx = app.ctx.clone();
+            ctx.run_ui(
+                egui::RawInput {
+                    events: vec![egui::Event::Key {
+                        key,
+                        physical_key: Some(key),
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                    }],
+                    ..Default::default()
+                },
+                |ui| draw(app, ui),
+            )
+            .drop_without_applying_deltas();
+        };
+        frame(&mut app, egui::Key::F5, egui::Modifiers::NONE);
+        frame(&mut app, egui::Key::S, egui::Modifiers::CTRL);
+        frame(&mut app, egui::Key::B, egui::Modifiers::CTRL);
+
+        assert!(!app.running, "F5 did not run the project");
+        assert!(app.auto_type.is_none(), "no command was typed");
+        assert!(
+            app.project.as_ref().unwrap().files[0].dirty,
+            "Ctrl+S did not save"
+        );
+        assert!(
+            app.notifications()
+                .iter()
+                .all(|(m, _)| !m.contains("Build OK")),
+            "Ctrl+B did not build"
+        );
+    }
+
+    /// The Project tab's geometry: the file tree is a 150 px left
+    /// column with the "sources" label on top and the file rows
+    /// stacked below it, and the editor fills the rest of the tab.
+    /// (Regression: the tree and editor sat in a `ui.horizontal` row,
+    /// which egui sizes to one interact height — the tree's content
+    /// capped the editor at a few lines, and the tree's rows inherited
+    /// the row's horizontal layout and drew side by side.)
+    #[test]
+    fn project_tab_tree_is_a_column_and_the_editor_fills_the_tab() {
+        let mut app = test_app();
+        let mut project = test_project("layout");
+        // A long file: the editor's viewport (not its content) is
+        // what must fill the tab — a long file makes the two
+        // distinguishable in the painted clip rects.
+        project.files[0].text = "NOP\n".repeat(80);
+        app.project = Some(project);
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        let ctx = app.ctx.clone();
+        let screen = egui::vec2(1024.0, 768.0);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+            ..Default::default()
+        };
+        // A few frames for the layout to settle.
+        for _ in 0..2 {
+            ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui))
+                .drop_without_applying_deltas();
+        }
+        let out = ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui));
+
+        // The editor's own TextEdit and the clips of its painted
+        // content: the TextEdit is content-sized, so what proves the
+        // editor fills the tab is the clip its painting gets — the
+        // scroll area's viewport, exactly the thing the bug shrank
+        // to the tree's content height.
+        let editor = ctx
+            .read_response(egui::Id::new(("project-editor", "main.asm")))
+            .expect("the editor was drawn");
+        // The tree column: the "sources" label's paint clip is the
+        // tree's own viewport, the fixed 150 px column.
+        let mut sources_clip = None;
+        let mut sources = None;
+        let mut main_row = None;
+        let mut editor_clip = None;
+        for clipped in &out.shapes {
+            let egui::Shape::Text(text) = &clipped.shape else {
+                continue;
+            };
+            let clip = clipped.clip_rect;
+            let body = text.galley.text();
+            let rect = clipped.shape.visual_bounding_rect();
+            if body == "sources" {
+                sources_clip = Some(clip);
+                sources = Some(rect);
+            } else if body == "main.asm" {
+                main_row = Some(rect);
+            } else if body.contains("NOP") && editor_clip.is_none() {
+                // The editor's content (NOP repeated): its clip is
+                // the editor's viewport.
+                editor_clip = Some(clip);
+            }
+        }
+        let sources_clip = sources_clip.expect("the sources label was painted");
+        let sources = sources.expect("the sources label was painted");
+        let main_row = main_row.expect("the main.asm row was painted");
+        let editor_clip = editor_clip.expect("editor text was painted");
+
+        // A fixed ~150 px tree column, as tall as the tab.
+        let column = sources_clip.width();
+        assert!(
+            (column - 150.0).abs() < 10.0,
+            "the tree column is 150 px wide ({column:.0} px)"
+        );
+        assert!(
+            sources_clip.height() > screen.y * 0.5,
+            "the tree column is as tall as the tab ({} px)",
+            sources_clip.height()
+        );
+
+        // The file rows stack vertically below the "sources" label,
+        // inside the column.
+        assert!(
+            main_row.top() > sources.bottom(),
+            "the file row is below the sources label (the tree is vertical)"
+        );
+        assert!(
+            (main_row.left() - sources.left()).abs() < 10.0,
+            "the tree rows share one column (left edges {:.0} vs {:.0})",
+            main_row.left(),
+            sources.left()
+        );
+        assert!(
+            main_row.right() < sources_clip.right(),
+            "the tree stays in its column (row right edge {:.0})",
+            main_row.right()
+        );
+
+        // The editor fills the rest: right of the column, wide, and
+        // its viewport is nearly the whole tab tall.
+        assert!(
+            editor.rect.left() > sources_clip.right(),
+            "the editor sits right of the tree column (left edge {:.0})",
+            editor.rect.left()
+        );
+        assert!(
+            editor.rect.width() > screen.x * 0.3,
+            "the editor fills the tab width ({:.0} px)",
+            editor.rect.width()
+        );
+        assert!(
+            editor_clip.height() > screen.y * 0.5,
+            "the editor's viewport fills the tab ({} px tall)",
+            editor_clip.height()
+        );
+        out.drop_without_applying_deltas();
     }
 
     #[test]

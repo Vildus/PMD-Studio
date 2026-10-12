@@ -90,6 +90,26 @@ pub fn hide_tab(dock: &mut DockState<Tab>, tab: Tab) {
     }
 }
 
+/// Whether egui_dock's own tab-body ScrollArea is active. `[h, v]`;
+/// false means the panel handles (or does not want) scrolling.
+fn tab_scrolls(tab: Tab) -> [bool; 2] {
+    match tab {
+        // Own scroll windows; a body scroll on top would push the
+        // register strip and toolbars off screen.
+        Tab::Debugger | Tab::Memory => [false, false],
+        // Stays centered, whatever the window size.
+        Tab::Screen => [false, false],
+        // The toolbar, import form and the MGLD/MGSV hint stay put;
+        // only the file table scrolls (inside the panel).
+        Tab::Tape => [false, false],
+        // The toolbar, find bar and file tree stay put; only the
+        // editor scrolls (inside the panel).
+        Tab::Project => [false, false],
+        // The whole content legitimately overflows.
+        Tab::Keyboard | Tab::Joystick | Tab::Problems => [true, true],
+    }
+}
+
 /// Transport-bar toggle: show when hidden, hide when shown.
 pub fn toggle_tab(dock: &mut DockState<Tab>, tab: Tab) {
     if tab_visible(dock, tab) {
@@ -203,17 +223,15 @@ impl TabViewer for Viewer<'_> {
     }
 
     /// egui_dock wraps every tab body in a ScrollArea; scrolling there
-    /// is the panel-internal kind. The Debugger and Memory tabs
-    /// manage their own scrolling (the follow-PC offset window and
-    /// the virtualized dump) — a body that scrolls on top of that
-    /// would push the register strip and toolbar off screen. The
-    /// keyboard legend and tape editor keep native scrolling, as
-    /// their content legitimately overflows.
+    /// is the panel-internal kind. Only the panels whose whole content
+    /// legitimately overflows (the keyboard legend, the joystick view)
+    /// keep it: the rest manage their own scrolling — the Debugger and
+    /// Memory have their own scroll windows (the follow-PC offset and
+    /// the virtualized dump), the Screen must stay centered, and the
+    /// Tape and Project bodies pin their toolbars and let only the
+    /// table resp. the editor scroll.
     fn scroll_bars(&self, tab: &Self::Tab) -> [bool; 2] {
-        match tab {
-            Tab::Debugger | Tab::Memory => [false, false],
-            _ => [true, true],
-        }
+        tab_scrolls(*tab)
     }
 
     fn on_close(&mut self, tab: &mut Tab) -> OnCloseResponse {
@@ -244,6 +262,33 @@ mod tests {
         assert!(!tab_visible(&dock, Tab::Keyboard));
         assert!(!tab_visible(&dock, Tab::Tape));
         assert_eq!(dock.main_surface().num_tabs(), 1);
+    }
+
+    /// Panels that pin their chrome (or center their content) must
+    /// not let egui_dock scroll the whole tab body — the scrolling
+    /// happens inside the panel instead.
+    #[test]
+    fn only_overflowing_tabs_get_the_body_scroll() {
+        for tab in [
+            Tab::Screen,
+            Tab::Tape,
+            Tab::Project,
+            Tab::Debugger,
+            Tab::Memory,
+        ] {
+            assert_eq!(
+                tab_scrolls(tab),
+                [false, false],
+                "{tab:?} must not body-scroll"
+            );
+        }
+        for tab in [Tab::Keyboard, Tab::Joystick, Tab::Problems] {
+            assert_eq!(
+                tab_scrolls(tab),
+                [true, true],
+                "{tab:?} keeps native scrolling"
+            );
+        }
     }
 
     /// Toggling: the keyboard docks beside the screen, and hiding it

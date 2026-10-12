@@ -31,14 +31,24 @@ pub struct ImportDraft {
     pub start: String,
 }
 
-/// The panel body, drawn inside its dock tab.
+/// The panel body, drawn inside its dock tab. The tab body does not
+/// scroll ([`crate::ui::dock`]): the toolbar stays on top and the
+/// MGLD/MGSV hint on the bottom, and only the file table between
+/// them scrolls.
 pub fn ui(ui: &mut egui::Ui, app: &mut App) {
     let theme = app.active_theme_data();
     toolbar(ui, app, &theme);
     ui.add_space(4.0);
+    // Reserve the bottom strip first (a top-down child that fills the
+    // rest would leave no room for it), then let the table have
+    // whatever remains.
+    egui::Panel::bottom("tape-status")
+        .frame(egui::Frame::NONE)
+        .show(ui, |ui| {
+            ui.add_space(4.0);
+            status(ui, app, &theme);
+        });
     file_list(ui, app, &theme);
-    ui.add_space(4.0);
-    status(ui, app, &theme);
 }
 
 /// New / Open / Save / Import / Export + per-file actions.
@@ -335,8 +345,10 @@ fn file_list(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
         secs += block.duration_secs();
     }
 
+    // The table is the panel's only scrolling part (the tab body
+    // itself does not scroll), so it takes all the remaining height
+    // instead of a fixed cap.
     egui::ScrollArea::vertical()
-        .max_height(240.0)
         .auto_shrink([false, false])
         .show(ui, |ui| {
             egui::Grid::new("tape-files")

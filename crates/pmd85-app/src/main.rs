@@ -141,7 +141,15 @@ impl ApplicationHandler for Application {
         // to the emulated machine.
         let response = w.egui_winit.on_window_event(&w.window, &event);
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            // With unsaved project edits the close waits for the
+            // guard dialog's answer instead.
+            WindowEvent::CloseRequested => {
+                if self.app.request_exit() {
+                    event_loop.exit();
+                } else {
+                    self.request_redraw();
+                }
+            }
             WindowEvent::Resized(size) => {
                 if let (Some(width), Some(height)) = (
                     std::num::NonZeroU32::new(size.width),
@@ -292,7 +300,12 @@ impl Application {
                 WindowRequest::Minimize => w.window.set_minimized(true),
                 WindowRequest::ToggleMaximize => w.window.set_maximized(!w.window.is_maximized()),
                 WindowRequest::Decorate(on) => w.window.set_decorations(on),
-                WindowRequest::Close => event_loop.exit(),
+                // The unsaved-changes guard may hold the exit back.
+                WindowRequest::Close => {
+                    if self.app.request_exit() {
+                        event_loop.exit();
+                    }
+                }
             }
         }
 

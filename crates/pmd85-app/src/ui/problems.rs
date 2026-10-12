@@ -16,9 +16,7 @@ pub fn ui(ui: &mut egui::Ui, app: &mut App) {
         return;
     };
     let Some(build) = project.build.as_ref() else {
-        ui.label(
-            egui::RichText::new("Not built yet \u{2014} Build in the Project tab (Ctrl+B).").weak(),
-        );
+        ui.label(egui::RichText::new("Not built yet \u{2014} Build in the Project tab.").weak());
         return;
     };
     if build.asm.diagnostics.is_empty() {

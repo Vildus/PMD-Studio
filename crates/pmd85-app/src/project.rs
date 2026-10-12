@@ -141,8 +141,16 @@ pub struct Project {
     pub goto_line: String,
     /// The target-settings popup.
     pub target_open: bool,
-    /// The new-file input in the tree.
+    /// The new-file popup.
+    pub new_open: bool,
+    /// The new-file input.
     pub new_name: String,
+    /// The rename popup: which buffer is being renamed.
+    pub rename: Option<usize>,
+    /// The rename popup's input.
+    pub rename_name: String,
+    /// The delete-file confirmation: which buffer would be deleted.
+    pub remove: Option<usize>,
 }
 
 /// Source file name suffixes that show up in the file tree.
@@ -199,7 +207,11 @@ impl Project {
             goto_open: false,
             goto_line: String::new(),
             target_open: false,
+            new_open: false,
             new_name: String::new(),
+            rename: None,
+            rename_name: String::new(),
+            remove: None,
         })
     }
 
@@ -259,16 +271,13 @@ impl Project {
 
     /// Create a new empty source file (on disk and in the buffers).
     pub fn new_file(&mut self, path: &str) -> Result<(), String> {
-        let clean = path.trim().trim_start_matches('/');
-        if clean.is_empty() {
-            return Err("empty file name".to_string());
-        }
-        let full = self.dir.join(clean);
+        let clean = clean_file_name(path)?;
+        let full = self.dir.join(&clean);
         if full.exists() {
             return Err(format!("{} already exists", full.display()));
         }
         std::fs::write(&full, "").map_err(|e| format!("{}: {e}", full.display()))?;
-        self.open_file(clean)
+        self.open_file(&clean)
     }
 
     /// Save the active buffer to disk. Returns the file name saved.
@@ -284,6 +293,73 @@ impl Project {
         std::fs::write(&full, &file.text).map_err(|e| format!("{}: {e}", full.display()))?;
         file.dirty = false;
         Ok(file.path.clone())
+    }
+
+    /// Save every dirty buffer. Returns the saved names, or the first
+    /// error (the buffers before it are already saved).
+    pub fn save_all(&mut self) -> Result<Vec<String>, String> {
+        let dirty: Vec<usize> = (0..self.files.len())
+            .filter(|&i| self.files[i].dirty)
+            .collect();
+        let mut saved = Vec::new();
+        for i in dirty {
+            saved.push(self.save_file(i)?);
+        }
+        Ok(saved)
+    }
+
+    /// Rename the buffer's file on disk and in the tree. If it is the
+    /// manifest's entry file, the manifest follows. Returns the new
+    /// name.
+    pub fn rename_file(&mut self, index: usize, new_name: &str) -> Result<String, String> {
+        let old = self
+            .files
+            .get(index)
+            .map(|f| f.path.clone())
+            .ok_or("no such file")?;
+        let clean = clean_file_name(new_name)?;
+        if clean == old {
+            return Ok(old);
+        }
+        if self.file_index(&clean).is_some() {
+            return Err(format!("{clean} is already open in this project"));
+        }
+        std::fs::rename(self.dir.join(&old), self.dir.join(&clean))
+            .map_err(|e| format!("{old} -> {clean}: {e}"))?;
+        let file = &mut self.files[index];
+        file.path = clean.clone();
+        if self.manifest.main == old {
+            self.manifest.main = clean.clone();
+            self.save_manifest()?;
+        }
+        self.files.sort_by(|a, b| a.path.cmp(&b.path));
+        self.active = self.file_index(&clean);
+        Ok(clean)
+    }
+
+    /// Delete the buffer's file from disk (the tree is a scan of the
+    /// directory, so removal has to be real to stick) and drop the
+    /// buffer. The manifest's entry file cannot be deleted. Returns
+    /// the deleted name.
+    pub fn remove_file(&mut self, index: usize) -> Result<String, String> {
+        let path = self
+            .files
+            .get(index)
+            .map(|f| f.path.clone())
+            .ok_or("no such file")?;
+        if path == self.manifest.main {
+            return Err(format!(
+                "{path} is the manifest's entry file; the project cannot build without it"
+            ));
+        }
+        std::fs::remove_file(self.dir.join(&path)).map_err(|e| format!("{}: {e}", path))?;
+        self.files.remove(index);
+        self.active = match self.active {
+            Some(a) if a == index => None,
+            Some(a) if a > index => Some(a - 1),
+            a => a,
+        };
+        Ok(path)
     }
 
     /// Save the manifest to `project.json`.
@@ -305,6 +381,20 @@ impl Project {
         let asm = pmd85_asm::assemble(&self.manifest.main, &mut resolver);
         Build { asm }
     }
+}
+
+/// A usable source file name: non-empty, no directory components —
+/// the tree is flat, and a rename must stay inside the project
+/// directory.
+fn clean_file_name(name: &str) -> Result<String, String> {
+    let clean = name.trim().trim_start_matches(['/', '\\']);
+    if clean.is_empty() {
+        return Err("empty file name".to_string());
+    }
+    if clean.contains(['/', '\\']) {
+        return Err("the file name must stay in the project directory".to_string());
+    }
+    Ok(clean.to_string())
 }
 
 /// Reads sources from the open buffers first, then from disk.
@@ -331,7 +421,7 @@ impl SourceResolver for ProjectResolver<'_> {
 /// routines needed, and the result is plainly visible when run.
 const TEMPLATE: &str = "\
 ; Fills the PMD 85 screen with colored stripes.
-; Build with Ctrl+B, run with F5 (tape load) or Ctrl+F5 (direct).
+; Build with the Build button, run with Run (tape load) or Run direct.
 
         ORG 1000H
 START:  LXI H,0C000H    ; video RAM: 256 rows of 64 bytes
@@ -416,6 +506,99 @@ mod tests {
         assert_eq!(saved, "main.asm");
         let reopened = Project::open(&dir).unwrap();
         assert_eq!(reopened.files[0].text, "MVI A,1\nHLT\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_all_writes_every_dirty_buffer() {
+        let dir = temp_project("save-all");
+        let mut project = Project::create(&dir, "saveall").unwrap();
+        project.files[0].text = "MVI A,1\nHLT\n".to_string();
+        project.files[0].dirty = true;
+        project.new_file("extra.asm").unwrap();
+        let extra = project.file_index("extra.asm").unwrap();
+        project.files[extra].text = "MVI B,2\n".to_string();
+        project.files[extra].dirty = true;
+        assert!(project.files.iter().all(|f| f.dirty));
+
+        let saved = project.save_all().unwrap();
+        assert_eq!(
+            saved,
+            ["extra.asm".to_string(), "main.asm".to_string()],
+            "saved in the sorted order"
+        );
+        assert!(project.files.iter().all(|f| !f.dirty));
+        // And a fresh open sees both texts.
+        let reopened = Project::open(&dir).unwrap();
+        assert_eq!(
+            reopened.files[reopened.file_index("main.asm").unwrap()].text,
+            "MVI A,1\nHLT\n"
+        );
+        assert_eq!(
+            reopened.files[reopened.file_index("extra.asm").unwrap()].text,
+            "MVI B,2\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_moves_the_file_and_the_manifest_entry() {
+        let dir = temp_project("rename");
+        let mut project = Project::create(&dir, "ren").unwrap();
+
+        // A plain rename: disk, tree and the active index follow.
+        let renamed = project.rename_file(0, "start.asm").unwrap();
+        assert_eq!(renamed, "start.asm");
+        assert!(!dir.join("main.asm").exists());
+        assert!(dir.join("start.asm").exists());
+        assert_eq!(project.files[0].path, "start.asm");
+        assert_eq!(project.active, Some(0));
+        // The manifest's entry file follows the rename.
+        let manifest: Manifest =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("project.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest.main, "start.asm");
+        // A fresh open builds from the renamed entry.
+        let mut reopened = Project::open(&dir).unwrap();
+        assert!(reopened.build().asm.diagnostics.is_empty());
+
+        // Renaming to the same name is a no-op, a taken name is an
+        // error, and slashes stay out. (The indices are re-looked-up:
+        // opening a file re-sorts the buffers.)
+        let start = project.file_index("start.asm").unwrap();
+        assert_eq!(
+            project.rename_file(start, "start.asm").unwrap(),
+            "start.asm"
+        );
+        project.new_file("other.asm").unwrap();
+        let start = project.file_index("start.asm").unwrap();
+        assert!(project.rename_file(start, "other.asm").is_err());
+        assert!(project.rename_file(start, "sub/dir.asm").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_deletes_from_disk_but_not_the_entry_file() {
+        let dir = temp_project("remove");
+        let mut project = Project::create(&dir, "rem").unwrap();
+        project.new_file("extra.asm").unwrap();
+        assert!(dir.join("extra.asm").exists());
+
+        // The manifest's entry file cannot be deleted.
+        let main = project.file_index("main.asm").unwrap();
+        assert!(project.remove_file(main).is_err());
+        assert!(dir.join("main.asm").exists());
+
+        // A regular file: gone from disk and from the buffers, with
+        // the active index fixed up.
+        let extra = project.file_index("extra.asm").unwrap();
+        project.active = Some(extra);
+        let removed = project.remove_file(extra).unwrap();
+        assert_eq!(removed, "extra.asm");
+        assert!(!dir.join("extra.asm").exists());
+        assert_eq!(project.files.len(), 1);
+        assert!(project.files.iter().all(|f| f.path == "main.asm"));
+        assert_eq!(project.active, None, "the removed buffer was active");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

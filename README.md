@@ -104,17 +104,25 @@ The panel opens a project folder (or creates one with a starter
 template), lists the `.asm`/`.inc` sources with dirty markers, and
 edits them in a syntax-highlighting editor whose colors come from
 the assembler's own lexer: mnemonics glow, literals are warm,
-comments dim. `Ctrl+B` builds the current buffers (unsaved edits
-included, `INCLUDE`s read from disk when not open); problems appear
-in the editor as red underlines and in the Problems panel as a
-clickable list that jumps to the offending spot. `Ctrl+S` saves,
-`Ctrl+F` opens find/replace (Enter/Shift+Enter cycle matches,
-matches are backlit in the editor), `Ctrl+G` goes to a line.
+comments dim. **Build** assembles the current buffers (unsaved edits
+included, `INCLUDE`s read from disk when not open) and writes the
+artifact into the project's `release/` folder; problems appear in the
+editor as red underlines and in the Problems panel as a clickable
+list that jumps to the offending spot. **Save** writes the edited
+buffer to disk, the find button opens find/replace (Enter/Shift+Enter
+cycle matches, matches are backlit in the editor), the go-to button
+jumps to a line. In the file tree, right-click a file for **New
+file**, **Rename** and **Delete** (delete removes the file from disk,
+behind a confirmation). There are no IDE keyboard shortcuts on
+purpose: the host keyboard is the emulated machine's (F5 is the PMD's
+K4 key, Ctrl its STOP key), so the IDE is driven entirely by its
+buttons. Closing a project (or the app) with unsaved edits raises a
+guard dialog: save, discard or cancel.
 
-Running a built program is one key, two ways, both through the
-Project tab:
+Running a built program is one button, two ways, both in the Project
+tab's toolbar:
 
-- **F5 — authentic.** The program is assembled into a cassette file,
+- **Run — authentic.** The program is assembled into a cassette file,
   the machine goes to its booted state, the file plays into the
   (flash-loading) tape deck and the monitor's `MGLD` command is typed
   into the emulated keyboard for you. The monitor does the leader
@@ -132,8 +140,8 @@ Project tab:
   stack sits too low for the autorun slot. The played file is a
   session straight from the build: the tape editor is never touched,
   so repeated runs do not pile files onto the tape.
-- **Ctrl+F5 — direct.** The image is written straight into RAM at
-  its address and the CPU starts at the `END` entry point. No tape:
+- **Run direct.** The image is written straight into RAM at its
+  address and the CPU starts at the `END` entry point. No tape:
   the fast inner loop while developing. The machine starts from the
   cached booted state (so the monitor's RAM variables are initialized
   and monitor routines are callable); without it, from a reset with
@@ -141,7 +149,11 @@ Project tab:
   write the ROM is mirrored over the RAM, and an image injected into
   that map is unreadable.
 
-With the `rom-module` target, F5 instead builds the program into a
+**Export…** builds and writes the artifact wherever you pick: a
+`.ptp` tape image, a `.rmm` ROM module or a raw `.bin`, per the
+project's target — the same bytes the runs load.
+
+With the `rom-module` target, Run instead builds the program into a
 `.rmm` image — the 12-byte module header the monitor BIOS executes
 (the CALL into its own copy routine, the source/count/target
 parameter block and the entry jump) followed by the program —
@@ -267,12 +279,17 @@ cargo test --workspace
   tests that render the UI in every state (dock tabs, debugger views,
   settings, tape, titlebar) and round-trip tests for settings, sessions
   and the dock/window layout files. The IDE's run flows are covered end
-  to end against the real monitor ROMs: F5 (tape autorun over every
-  model, including the 85-3's cached compatibility boot), Ctrl+F5
-  (direct RAM inject over every model), the ROM-module target, the
-  booted-state cache and the run module's ejection on reboot, plus a
-  highlighter test that keeps the editor's colors aligned across blank
-  lines.
+  to end against the real monitor ROMs: Run (tape autorun over every
+  model, including the 85-3's cached compatibility boot), Run direct
+  (RAM inject over every model), the ROM-module target, the
+  booted-state cache and the run module's ejection on reboot; the
+  release-folder artifact is checked byte-for-byte against the run's
+  blocks, the file tree's rename/delete round-trip through disk, the
+  unsaved-changes guard state machine (close, project switch, app
+  exit) is unit-tested, and a regression test pins that no host
+  shortcut (F5, Ctrl+S/B) triggers an IDE action while the Project
+  tab is visible; plus a highlighter test that keeps the editor's
+  colors aligned across blank lines.
 
 ## Debug tools
 
