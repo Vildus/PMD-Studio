@@ -1777,6 +1777,12 @@ impl App {
             .map_err(|e| format!("State: {e}"))?;
         self.tape.play = false;
         self.tape.was_recording = false;
+        // The restored machine's cycle counter jumped to the snapshot's
+        // timeline; the speaker timeline must follow it, or every edge
+        // until the counter catches up would fold into one frame.
+        if let Some(audio) = &mut self.audio {
+            audio.resync(self.machine.bus.total_cycles());
+        }
         self.refresh_screen();
         Ok(())
     }

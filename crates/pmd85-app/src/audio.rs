@@ -112,6 +112,11 @@ pub struct SpeakerOut {
     scratch: Vec<f32>,
     tape_scratch: Vec<f32>,
     mixed: Vec<f32>,
+    /// Test-only: record every mixed sample pushed to the ring.
+    #[cfg(test)]
+    recorded: Vec<f32>,
+    #[cfg(test)]
+    recording: bool,
 }
 
 impl SpeakerOut {
@@ -176,6 +181,10 @@ impl SpeakerOut {
             scratch: Vec::new(),
             tape_scratch: Vec::new(),
             mixed: Vec::new(),
+            #[cfg(test)]
+            recorded: Vec::new(),
+            #[cfg(test)]
+            recording: false,
         })
     }
 
@@ -188,9 +197,22 @@ impl SpeakerOut {
     /// restore (its counter jumps to the snapshot's value). Anchoring
     /// at 0 instead would render the whole gap in one frame —
     /// minutes of silence pushed through the ring.
+    ///
+    /// The anchor is rounded down to the tone clocks' 2048-cycle
+    /// lattice: the gated tones (1 kHz, 4 kHz) are square waves whose
+    /// edges sit on the video-divider lattice (periods 2048 and 512,
+    /// see `MachineBus::gated_tone_flip`), and their edge spacing is
+    /// near-commensurate with the sample grid — where the grid sits
+    /// relative to that lattice decides the sampled duty pattern on
+    /// output rates that do not divide it evenly. Anchoring on the
+    /// lattice keeps every fixed tone (boot beeps, key clicks)
+    /// rendering exactly like a freshly powered-on machine no matter
+    /// where the counter jumped to.
     pub fn resync(&mut self, cycle: u64) {
-        self.expander = EdgeExpander::new(self.sample_rate, cycle, false);
-        self.tape_expander = EdgeExpander::new(self.sample_rate, cycle, false);
+        const TONE_LATTICE: u64 = 2048;
+        let anchor = cycle - (cycle % TONE_LATTICE);
+        self.expander = EdgeExpander::new(self.sample_rate, anchor, false);
+        self.tape_expander = EdgeExpander::new(self.sample_rate, anchor, false);
         if let Ok(mut ring) = self.ring.lock() {
             ring.clear();
         }
@@ -223,6 +245,23 @@ impl SpeakerOut {
         if let Ok(mut ring) = self.ring.lock() {
             ring.push(&self.mixed);
         }
+        #[cfg(test)]
+        if self.recording {
+            self.recorded.extend_from_slice(&self.mixed);
+        }
+    }
+
+    /// Test-only: capture every mixed sample submitted from now on.
+    #[cfg(test)]
+    pub fn start_recording(&mut self) {
+        self.recording = true;
+        self.recorded.clear();
+    }
+
+    /// Test-only: the samples recorded since [`Self::start_recording`].
+    #[cfg(test)]
+    pub fn recorded(&self) -> &[f32] {
+        &self.recorded
     }
 }
 

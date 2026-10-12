@@ -140,6 +140,29 @@ impl MachineBus {
         }
     }
 
+    /// Exact cycle of the next fixed-tone output flip in `(start, end]`,
+    /// if any: the first video divider boundary where the gated level
+    /// changes. The tone clocks free-run independently of the CPU in
+    /// real hardware, so a clock-driven transition is stamped at the
+    /// divider boundary itself instead of being quantized to the
+    /// instruction stream — otherwise the fixed tones (key clicks, the
+    /// monitor's beeps) would pick up instruction jitter whose pattern
+    /// depends on when the machine happened to be reset, subtly
+    /// changing their timbre.
+    fn gated_tone_flip(start: u64, end: u64, pc: u8) -> Option<u64> {
+        // clk_4k flips at multiples of 256, clk_1k at multiples of 1024
+        // (a multiple of 1024 is also one of 256), so scanning the
+        // 256-boundaries covers both.
+        let mut c = (start / 256 + 1) * 256;
+        while c <= end {
+            if Self::speaker_level_from(pc, c) != Self::speaker_level_from(pc, c - 1) {
+                return Some(c);
+            }
+            c += 256;
+        }
+        None
+    }
+
     pub fn speaker_level(&self) -> bool {
         self.speaker_level
     }
@@ -228,16 +251,22 @@ impl MachineBus {
 
     /// Advance peripheral clocks by `cycles` CPU cycles.
     fn advance_time(&mut self, cycles: u64) {
+        let start = self.total_cycles;
         self.total_cycles += cycles;
         // The speaker level can change both through port C writes (which
         // call refresh_speaker inside the instruction) and through the
-        // fixed-tone clock phases flipping; either way the transition is
-        // stamped at the end of the current instruction.
+        // fixed-tone clock phases flipping. A gate write is CPU-driven,
+        // so its transition is stamped at the end of the instruction;
+        // a fixed-tone flip is divider-driven and continuous in real
+        // hardware, so it is stamped at the exact boundary (see
+        // [`Self::gated_tone_flip`]).
         self.refresh_speaker();
         if self.pending_speaker_edge {
             self.pending_speaker_edge = false;
+            let stamp = Self::gated_tone_flip(start, self.total_cycles, self.ppi_system.outputs[2])
+                .unwrap_or(self.total_cycles);
             self.speaker_edges.push(SpeakerEdge {
-                cycle: self.total_cycles,
+                cycle: stamp,
                 level: self.speaker_level,
             });
         }
@@ -963,6 +992,51 @@ mod tests {
         m.bus.io_write(0x87, 0b0000_0000);
         m.step_frame();
         assert!(m.take_speaker_edges().is_empty());
+    }
+
+    #[test]
+    fn gated_tone_edges_are_stamped_on_the_divider_lattice() {
+        // The gated fixed tones are driven by the video divider, which
+        // free-runs independently of the CPU: their transitions must be
+        // stamped at the exact divider boundaries, not quantized to the
+        // instruction stream. Otherwise the sampled duty pattern of a
+        // tone depends on the CPU's instruction phase — which depends
+        // on when the machine was booted or reset — subtly changing
+        // the timbre of key clicks and monitor beeps between boots.
+        //
+        // The program opens the gate from code and then spins in a
+        // 10-cycle JMP loop, so instruction ends never land on the
+        // 256-cycle lattice: instruction-quantized stamps would be
+        // visibly off it in the assertions below.
+        let gated_tone_edges = |gate: u8| {
+            let prog = [
+                0x3Eu8, // MVI A,<BSR value>
+                gate, 0xD3, 0x87, // OUT 87
+                0xC3, 0x05, 0x05, // here: JMP here
+            ];
+            let mut m = code(&prog);
+            m.step_frame();
+            m.take_speaker_edges()
+        };
+
+        // PC1 gates the 4 kHz divider tone.
+        let edges = gated_tone_edges(0b0000_0011);
+        assert!(edges.len() > 30, "expected a burst of 4 kHz edges");
+        // The first edge (the gate opening) is CPU-driven and stamped
+        // at the instruction end; every clock-driven edge after it
+        // must sit exactly on the 256-cycle lattice.
+        for e in &edges[1..] {
+            assert_eq!(e.cycle % 256, 0, "4 kHz edge off the divider lattice");
+        }
+        for pair in edges.windows(2) {
+            assert_eq!(pair[0].level, !pair[1].level);
+        }
+
+        // PC0 gates the 1 kHz tone: multiples of 1024.
+        let edges = gated_tone_edges(0b0000_0001);
+        for e in &edges[1..] {
+            assert_eq!(e.cycle % 1024, 0, "1 kHz edge off the divider lattice");
+        }
     }
 
     #[test]

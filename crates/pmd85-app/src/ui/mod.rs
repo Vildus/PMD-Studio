@@ -2232,4 +2232,160 @@ mod tests {
         assert!(!app.tape.dirty);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// The boot beep must sound the same after a tape project run as on
+    /// a fresh start (regression for the "corrupted ++ Os ready ++
+    /// beep after a run" report). The gated tone clocks are locked to
+    /// the video-divider lattice, so their edges must be stamped on
+    /// that lattice (not quantized to the instruction stream) and the
+    /// audio timeline must re-anchor on it after a state restore —
+    /// otherwise the sampled duty pattern of every fixed tone changes
+    /// with the session, and the beep sounds harsher until the app is
+    /// restarted.
+    ///
+    /// Full fidelity: a real SpeakerOut (skipped when no audio device
+    /// exists), the real run flow (auto-typed MGLD, tape load,
+    /// autostart), then a reboot. Both boots' audio is recorded and
+    /// the beep segments compared sample by sample (a pure time shift
+    /// is inaudible, so the best small shift is used).
+    #[test]
+    fn boot_beep_is_identical_after_a_tape_project_run() {
+        let boot_frames = 380; // the 85-2 boot + beep + prompt
+        let step = |app: &mut crate::app::App, frames: usize| {
+            for _ in 0..frames {
+                app.advance();
+            }
+        };
+
+        let mut app = test_app();
+        // The report is on the 85-2 (monit2, "++ Os ready ++").
+        app.pending_config.model = Model::Pmd852;
+        app.apply_config(app.pending_config.clone());
+        app.set_running(true);
+        // One emulated frame per advance(), decoupled from the wall
+        // clock: the whole flow below is frame-paced, not real-time.
+        app.pacer.force_frames(1);
+        if app.audio.is_none() {
+            // No audio device here; the lattice properties themselves
+            // are covered by the pmd85-core tests.
+            return;
+        }
+
+        // Reference: the fresh boot's beep.
+        app.audio.as_mut().unwrap().start_recording();
+        step(&mut app, boot_frames);
+        let fresh: Vec<f32> = app.audio.as_ref().unwrap().recorded().to_vec();
+
+        // A tape project with the default target (tape, autostart).
+        let dir = std::env::temp_dir().join(format!("pmd85-beep-regress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _project = crate::project::Project::create(&dir, "beep").unwrap();
+        std::fs::write(
+            dir.join("main.asm"),
+            // A minimal program that just loops.
+            "        .org 3000h\nloop:   jmp loop\n",
+        )
+        .unwrap();
+        app.open_project(&dir);
+        app.run_project();
+        // Run: auto-type, session load, program start.
+        step(&mut app, 260);
+
+        // The reboot whose beep was reported as corrupted.
+        app.reset();
+        app.audio.as_mut().unwrap().start_recording();
+        step(&mut app, boot_frames);
+        let reboot: Vec<f32> = app.audio.as_ref().unwrap().recorded().to_vec();
+
+        // Locate the beep in each recording: the longest run of dense
+        // zero-crossing windows.
+        let beep = |wave: &[f32]| -> Vec<f32> {
+            let win = 480; // 10 ms at 48 kHz
+            let mut segs: Vec<(usize, usize)> = Vec::new();
+            for (w, chunk) in wave.chunks(win).enumerate() {
+                let z = chunk
+                    .windows(2)
+                    .filter(|p| (p[0] > 0.0) != (p[1] > 0.0))
+                    .count();
+                let dense = z > win / 40;
+                let start = w * win;
+                match (dense, segs.last_mut()) {
+                    (true, Some((_, end))) if start <= *end + win => *end = start + win,
+                    (true, _) => segs.push((start, start + win)),
+                    _ => {}
+                }
+            }
+            assert!(!segs.is_empty(), "no beep found in the recording");
+            segs.iter()
+                .map(|(s, e)| wave[*s..(*e).min(wave.len())].to_vec())
+                .max_by_key(|seg| seg.len())
+                .unwrap()
+        };
+        let beep_fresh = beep(&fresh);
+        let beep_reboot = beep(&reboot);
+        assert!(
+            beep_fresh.len() > 4000,
+            "the beep is suspiciously short: {}",
+            beep_fresh.len()
+        );
+
+        // Compare sample by sample at the best small time shift (the
+        // segment detection is window-quantized).
+        let n = beep_fresh.len().min(beep_reboot.len());
+        let best = (-600i64..=600)
+            .map(|shift| {
+                (0..n as i64)
+                    .filter(|&i| {
+                        let j = i + shift;
+                        j >= 0
+                            && j < n as i64
+                            && (beep_fresh[i as usize] - beep_reboot[j as usize]).abs() > 1e-9
+                    })
+                    .count()
+            })
+            .min()
+            .unwrap();
+        assert!(
+            (best as f32) / (n as f32) < 0.005,
+            "the reboot beep differs from the fresh one: {best}/{n} samples"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Restoring a save state jumps the machine's cycle counter back;
+    /// the speaker timeline must follow it (regression: without the
+    /// resync, the expander stays ahead of the machine and renders
+    /// nothing until the counter catches up — minutes of silence).
+    #[test]
+    fn load_state_resyncs_the_speaker_timeline() {
+        let mut app = test_app();
+        if app.audio.is_none() {
+            return;
+        }
+        app.set_running(true);
+        for _ in 0..30 {
+            app.advance();
+        }
+        let dir = state_scratch_dir("load-resync");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.pss");
+        app.save_state_to(&path).unwrap();
+
+        // Run on, then restore the older state.
+        for _ in 0..30 {
+            app.advance();
+        }
+        app.audio.as_mut().unwrap().start_recording();
+        app.load_state_from(&path).unwrap();
+        let before = app.audio.as_ref().unwrap().recorded().len();
+        for _ in 0..5 {
+            app.advance();
+        }
+        let after = app.audio.as_ref().unwrap().recorded().len();
+        assert!(
+            after > before,
+            "audio stalled after a state restore: {before} -> {after} samples"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -68,6 +68,10 @@ pub struct Pacer {
     next_due: Instant,
     /// Seconds-epoch counterpart of `next_due`, for the pure kernel.
     epoch: Instant,
+    /// Test-only: when set, [`Self::take_frames`] returns this many
+    /// frames on every call, ignoring the wall clock.
+    #[cfg(test)]
+    forced: Option<u32>,
 }
 
 impl Default for Pacer {
@@ -82,11 +86,17 @@ impl Pacer {
         Pacer {
             next_due: epoch,
             epoch,
+            #[cfg(test)]
+            forced: None,
         }
     }
 
     /// Frames to run at `multiplier` right now.
     pub fn take_frames(&mut self, multiplier: f64) -> u32 {
+        #[cfg(test)]
+        if let Some(frames) = self.forced {
+            return frames;
+        }
         let now = self.epoch.elapsed().as_secs_f64();
         let due = self.next_due.duration_since(self.epoch).as_secs_f64();
         let (frames, new_due) = frames_due(now, due, multiplier);
@@ -103,6 +113,15 @@ impl Pacer {
     /// Wall-clock time the next emulated frame is due (turbo ignores it).
     pub fn next_due(&self) -> Instant {
         self.next_due
+    }
+
+    /// Test-only: pin the emulator to `frames` frames per
+    /// [`Self::take_frames`] call, ignoring the wall clock, so tests
+    /// can run frame-paced flows (boots, auto-typed loads) without
+    /// real-time sleeps.
+    #[cfg(test)]
+    pub fn force_frames(&mut self, frames: u32) {
+        self.forced = Some(frames);
     }
 }
 
