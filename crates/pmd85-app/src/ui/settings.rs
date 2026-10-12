@@ -165,6 +165,20 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                     );
                 }
             }
+            // A module the IDE attached for a run: not part of the
+            // configuration, and gone on the next reboot.
+            if app.ide_module.is_some() {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(
+                        "A project's ROM module is attached — it is not part of\n\
+                         the configuration and is ejected on the next reboot\n\
+                         or restart",
+                    )
+                    .size(11.0)
+                    .color(c(&theme.warn)),
+                );
+            }
 
             // ---- restart required? ----
             if cfg != app.config {

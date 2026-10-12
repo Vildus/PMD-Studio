@@ -115,20 +115,31 @@ Running a built program is one key, two ways, both through the
 Project tab:
 
 - **F5 — authentic.** The program is assembled into a cassette file,
-  the machine is reset to the monitor, the file goes on the
-  (flash-loading) tape and the monitor's `MGLD` command is typed
+  the machine goes to its booted state, the file plays into the
+  (flash-loading) tape deck and the monitor's `MGLD` command is typed
   into the emulated keyboard for you. The monitor does the leader
   sync, the header, the loading and the checksum — exactly as with a
-  real tape, just without the transfer time. With the default
-  autostart target the tape carries the classic PMD autorun trick
-  (the loader block at 0x7FD7 whose last word overwrites the block
-  reader's return slot at 0x7FFB), so the program starts by itself
-  once loaded. On the 85-3 the flow first types `JUMP FFF0`,
-  switching Monitor 3 into its 85-2 compatibility mode — its native
-  stack sits too low for the autorun slot.
+  real tape, just without the transfer time. The booted state comes
+  from a cached snapshot (captured once per machine configuration, so
+  the boot's memory test is skipped on every run); when no snapshot
+  can be captured the flow falls back to a real reset. With the
+  default autostart target the tape carries the classic PMD autorun
+  trick (the loader block at 0x7FD7 whose last word overwrites the
+  block reader's return slot at 0x7FFB), so the program starts by
+  itself once loaded. On the 85-3 the snapshot already sits in
+  Monitor 3's 85-2 compatibility mode (`JUMP FFF0`); without the
+  snapshot the flow types that command first — Monitor 3's native
+  stack sits too low for the autorun slot. The played file is a
+  session straight from the build: the tape editor is never touched,
+  so repeated runs do not pile files onto the tape.
 - **Ctrl+F5 — direct.** The image is written straight into RAM at
-  its address and the CPU starts at the `END` entry point. No
-  monitor, no tape: the fast inner loop while developing.
+  its address and the CPU starts at the `END` entry point. No tape:
+  the fast inner loop while developing. The machine starts from the
+  cached booted state (so the monitor's RAM variables are initialized
+  and monitor routines are callable); without it, from a reset with
+  the boot-time shadow map dropped — until the monitor's first I/O
+  write the ROM is mirrored over the RAM, and an image injected into
+  that map is unreadable.
 
 With the `rom-module` target, F5 instead builds the program into a
 `.rmm` image — the 12-byte module header the monitor BIOS executes
@@ -138,7 +149,10 @@ plugs it into the ROM-module connector and reboots: the monitor
 detects the module, transfers the payload to RAM through the
 connector's 8255 and runs it, exactly like a real cartridge. On
 the 85-1 (whose Monitor 1 has no boot-time detection) the app
-types the `BASIC G` transfer command instead.
+types the `BASIC G` transfer command instead. The run's module is
+transient: the status bar shows it as `(project)` while attached,
+and the next reboot or restart ejects it back to the configured
+module.
 
 The assembler dialect is deliberately lenient: case-insensitive,
 labels with or without colon, `EQU` in any order, numbers as `123`,
@@ -252,7 +266,13 @@ cargo test --workspace
   when no output device is present), plus headless egui frame-building
   tests that render the UI in every state (dock tabs, debugger views,
   settings, tape, titlebar) and round-trip tests for settings, sessions
-  and the dock/window layout files
+  and the dock/window layout files. The IDE's run flows are covered end
+  to end against the real monitor ROMs: F5 (tape autorun over every
+  model, including the 85-3's cached compatibility boot), Ctrl+F5
+  (direct RAM inject over every model), the ROM-module target, the
+  booted-state cache and the run module's ejection on reboot, plus a
+  highlighter test that keeps the editor's colors aligned across blank
+  lines.
 
 ## Debug tools
 

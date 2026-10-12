@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use egui::{Id, TextEdit};
 use egui_phosphor::regular as icon;
-use pmd85_asm::{is_directive, lex_lines, lookup_mnemonic, Tok};
+use pmd85_asm::{is_directive, lex_lines, lookup_mnemonic, LexLine, Tok};
 
 use crate::app::App;
 use crate::project::{FindState, Target};
@@ -869,15 +869,21 @@ fn highlight_job(
 
     // The assembler's view of the text: the same tokens the build
     // will see (a scratch file index of 0; positions are per line).
+    // The lexer drops blank lines, so lines are looked up by their
+    // number, not by their position in the lexed list — indexing
+    // positionally would color every line after a blank one with the
+    // wrong line's tokens.
     let mut diags = Vec::new();
     let lines = lex_lines(0, text, &mut diags);
+    let lexed_of: std::collections::HashMap<usize, &LexLine> =
+        lines.iter().map(|l| (l.line, l)).collect();
     let raw: Vec<&str> = text.split_inclusive('\n').collect();
 
     let mut base = 0usize; // byte offset of the current line start
     for (i, line) in raw.iter().enumerate() {
         let lineno = i + 1;
         let nchars = line.chars().count();
-        let lexed = lines.get(i);
+        let lexed = lexed_of.get(&lineno).copied();
 
         // Byte offset of each char boundary (chars -> bytes).
         let mut at_byte = Vec::with_capacity(nchars + 1);
@@ -1007,4 +1013,51 @@ fn highlight_job(
         base += line.len();
     }
     job
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The highlighting is laid out from the assembler's own tokens,
+    /// which the lexer emits without blank lines: the highlighter must
+    /// map them back by line number, or every line after a blank one
+    /// is colored with a neighbouring line's tokens (mnemonics on
+    /// labels, literals on registers, at a constant offset).
+    #[test]
+    fn highlighting_survives_blank_lines() {
+        let theme = Theme::default();
+        let palette = Palette::from(&theme);
+        let text = "START: MOV A,H\n\n INR B\n HLT ; done\n";
+        let job = highlight_job(
+            text,
+            &egui::FontId::monospace(12.0),
+            &palette,
+            &HashSet::new(),
+            &FindState::default(),
+        );
+        let runs = |want: egui::Color32| -> Vec<String> {
+            job.sections
+                .iter()
+                .filter(|s| s.format.color == want)
+                .map(|s| job.text[s.byte_range.start.0..s.byte_range.end.0].to_string())
+                .collect()
+        };
+        assert_eq!(
+            runs(Theme::color(&theme.accent)),
+            ["MOV", "INR", "HLT"],
+            "mnemonics (and only they) glow"
+        );
+        assert_eq!(
+            runs(Theme::color(&theme.warn)),
+            Vec::<String>::new(),
+            "no literals in this source"
+        );
+        assert_eq!(
+            runs(Theme::color(&theme.text_weak)),
+            ["; done\n"],
+            "the comment dims"
+        );
+        assert_eq!(job.text, text, "the job covers the text exactly");
+    }
 }

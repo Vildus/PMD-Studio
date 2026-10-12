@@ -36,10 +36,17 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 ));
 
                 label(ui, "MODULE", &theme);
-                ui.label(value_text(
-                    app.config.rom_module.as_deref().unwrap_or("\u{2014}"),
-                    &theme,
-                ));
+                if app.ide_module.is_some() {
+                    ui.label(value_text("(project)", &theme)).on_hover_text(
+                        "A project's ROM module is attached while it runs;\n\
+                         it is ejected on the next reboot or restart",
+                    );
+                } else {
+                    ui.label(value_text(
+                        app.config.rom_module.as_deref().unwrap_or("\u{2014}"),
+                        &theme,
+                    ));
+                }
 
                 label(ui, "TIME", &theme);
                 let (h, m, s) = app.emulated_time();

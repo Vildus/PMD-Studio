@@ -71,7 +71,7 @@ impl Memory {
     /// Identity of the installed monitor ROM: length and checksum.
     /// A save state records this and refuses to restore into a machine
     /// running a different monitor.
-    pub(crate) fn monitor_signature(&self) -> (u16, u8) {
+    pub fn monitor_signature(&self) -> (u16, u8) {
         (
             self.rom_len as u16,
             crate::tape::crc8(&self.rom[..self.rom_len]),

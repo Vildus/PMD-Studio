@@ -108,6 +108,19 @@ impl MachineConfig {
     }
 }
 
+/// A cached snapshot of the machine right after the monitor booted
+/// to its command prompt — on the 85-3, after Monitor 3's `JUMP
+/// FFF0` compatibility switch and its reboot. IDE runs restore it
+/// instead of rebooting for real, skipping the boot-time memory
+/// test. Keyed by the monitor's identity; invalidated whenever the
+/// machine is rebuilt.
+#[derive(Clone, Debug)]
+pub(crate) struct BootState {
+    /// Monitor identity (length + CRC) the snapshot was taken with.
+    sig: (u16, u8),
+    bytes: Vec<u8>,
+}
+
 /// Emulation speed: a real-time multiplier plus a turbo toggle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpeedState {
@@ -373,6 +386,19 @@ impl TapeState {
         machine.bus.tape_stop();
     }
 
+    /// Play a project run's blocks as a deck session, straight from
+    /// the build: they never enter the tape editor, so repeated runs
+    /// do not accumulate files on the tape. Returns whether the
+    /// session started.
+    pub fn play_run(&mut self, items: Vec<PlayItem>, machine: &mut Machine) -> bool {
+        if items.is_empty() {
+            return false;
+        }
+        machine.bus.tape_play_session(items);
+        self.play = true;
+        true
+    }
+
     /// Whether a playback session is active.
     pub fn is_playing(&self) -> bool {
         self.play
@@ -425,18 +451,55 @@ pub(crate) struct AutoType {
     phase: u16,
     /// Still waiting for the command prompt before the next key.
     waiting: bool,
-    /// A tape file to start playing when the last key of the command
-    /// goes down (the monitor dispatches on that Enter, so the tape
-    /// is already rolling when its read loop starts; starting any
+    /// A tape session to start when the last key of the command goes
+    /// down (the monitor dispatches on that Enter, so the tape is
+    /// already rolling when its read loop starts; starting any
     /// earlier would burn the flash session's patience while the
     /// machine still boots).
-    play_on_start: Option<usize>,
+    play_on_start: Option<RunSession>,
+    /// The command-prompt detector (the failsafe clock is
+    /// `waited`).
+    detector: PromptDetect,
+    /// Frames waited so far (the failsafe clock).
+    waited: u32,
+}
+
+/// Detects the monitor's command prompt: while the command loop
+/// polls the keyboard, the scan column cycles constantly, and while
+/// the boot code (the RAM test) runs it stands still. One observation
+/// per frame; [`PromptDetect::step`] is true once the column changed
+/// [`AUTOTYPE_SCAN_FRAMES`] frames in a row.
+#[derive(Debug, Default)]
+pub(crate) struct PromptDetect {
     /// The last-seen keyboard scan column, and how many consecutive
     /// frames it changed in (the scan running).
     last_scan: u8,
-    scan_changes: u8,
-    /// Frames waited so far (the failsafe clock).
-    waited: u32,
+    changes: u8,
+}
+
+impl PromptDetect {
+    /// Observe the machine for one frame; true at the prompt.
+    fn step(&mut self, machine: &Machine) -> bool {
+        let scan = machine.bus.ppi_system_scan();
+        self.changes = if scan != self.last_scan {
+            self.changes.saturating_add(1)
+        } else {
+            0
+        };
+        self.last_scan = scan;
+        self.changes >= AUTOTYPE_SCAN_FRAMES
+    }
+}
+
+/// A tape playback session prepared by a project run: the built
+/// blocks queued straight into the deck (they never enter the tape
+/// editor, so repeated runs do not pile files onto the tape), with
+/// the notification text for the flash-load popup.
+#[derive(Debug)]
+pub(crate) struct RunSession {
+    items: Vec<PlayItem>,
+    flash: bool,
+    name: String,
 }
 
 /// One step of the auto-typer's script.
@@ -457,17 +520,20 @@ const AUTOTYPE_SETTLE: u16 = 2;
 const AUTOTYPE_TIMEOUT: u32 = 600;
 /// Consecutive frames of a cycling scan column that mean "prompt".
 const AUTOTYPE_SCAN_FRAMES: u8 = 3;
+/// Frames the boot-state capture runs per phase before giving up
+/// (the slowest monitor boots in well under this; a blank ROM never
+/// reaches a prompt and the run flows fall back to a real reset).
+const BOOT_CAPTURE_MAX_FRAMES: u32 = 3000;
 
 impl AutoType {
-    fn new(script: &[AutoTypeItem], play_on_start: Option<usize>) -> Self {
+    fn new(script: &[AutoTypeItem], play_on_start: Option<RunSession>) -> Self {
         AutoType {
             queue: script.iter().copied().collect(),
             current: None,
             phase: 0,
             waiting: true,
             play_on_start,
-            last_scan: 0,
-            scan_changes: 0,
+            detector: PromptDetect::default(),
             waited: 0,
         }
     }
@@ -504,6 +570,22 @@ pub struct App {
 
     pub rom_dir: PathBuf,
     pub catalog: RomCatalog,
+
+    /// The monitor ROM bytes the running machine was built from —
+    /// what the scratch machine that captures the booted state (see
+    /// [`BootState`]) is built from.
+    pub(crate) monitor_rom: Vec<u8>,
+    /// The configured ROM module image (from `MachineConfig`): what
+    /// the connector returns to when a project-run module is
+    /// ejected.
+    pub(crate) config_module: Option<Vec<u8>>,
+    /// The ROM module image attached by the last project run (the
+    /// `rom-module` target): transient — a reboot ejects it, like
+    /// pulling the cartridge.
+    pub(crate) ide_module: Option<Vec<u8>>,
+    /// Cached booted machine state for IDE runs (memory test
+    /// skipped). Cleared whenever the machine is rebuilt.
+    pub(crate) boot_state: Option<BootState>,
 
     pub profile: ColorProfile,
     pub audio: Option<audio::SpeakerOut>,
@@ -604,6 +686,10 @@ impl App {
             pending_config: config.clone(),
             rom_dir,
             catalog,
+            monitor_rom: Vec::new(),
+            config_module: None,
+            ide_module: None,
+            boot_state: None,
             profile: ColorProfile::Rgb,
             audio: None,
             running: true,
@@ -666,7 +752,7 @@ impl App {
     /// Rebuild the machine from a cold-start configuration. Never
     /// panics: load failures produce a notification and a blank ROM.
     pub fn rebuild_machine(&mut self, config: &MachineConfig) {
-        let monitor = self.load_rom(
+        let (monitor, monitor_missing) = self.load_rom(
             &config.monitor,
             config.model.default_monitor(),
             config.model,
@@ -675,7 +761,13 @@ impl App {
             .rom_module
             .as_ref()
             .map(|name| self.load_rom(&Some(name.clone()), name, config.model).0);
-        let ((monitor, monitor_missing), module) = (monitor, module);
+        // Remember the parts a reboot must be able to return to, and
+        // drop anything tied to the old machine: a project-run module
+        // and the cached booted state do not survive a rebuild.
+        self.monitor_rom = monitor.clone();
+        self.config_module = module.clone();
+        self.ide_module = None;
+        self.boot_state = None;
         self.machine = Machine::new(config.model, &monitor, module);
         self.config = config.clone();
         self.pending_config = config.clone();
@@ -740,15 +832,21 @@ impl App {
     }
 
     /// Stop: reset the machine and hold it at the power-on state.
+    /// A ROM module attached by a project run is ejected, like
+    /// pulling the cartridge before switching the machine off.
     pub fn stop(&mut self) {
+        self.eject_ide_module();
         self.machine.reset();
         self.frames_done = 0;
         self.set_running(false);
     }
 
     /// Reset: warm reboot (CPU, memory maps, peripherals; RAM
-    /// preserved), keeping the run state.
+    /// preserved), keeping the run state. A ROM module attached by a
+    /// project run is ejected — the connector returns to whatever the
+    /// configuration says.
     pub fn reset(&mut self) {
+        self.eject_ide_module();
         self.machine.reset();
         self.frames_done = 0;
         self.pacer.resync();
@@ -836,6 +934,102 @@ impl App {
         self.persist();
     }
 
+    // ----- booted-state cache ------------------------------------------------
+
+    /// Eject the ROM module a project run attached (the
+    /// `rom-module` target): the connector returns to the configured
+    /// module. A reboot must not keep the run's cartridge in — on
+    /// real hardware it would survive a warm reset, but the IDE's
+    /// module is a *run* artifact, not a machine configuration.
+    pub(crate) fn eject_ide_module(&mut self) {
+        if self.ide_module.take().is_some() {
+            self.machine.bus.memory.rom_module = self.config_module.clone();
+        }
+    }
+
+    /// Capture the machine's booted state for the current
+    /// configuration: a scratch machine of the same model and monitor,
+    /// reset and run — un-paced, as fast as the host can emulate —
+    /// until the monitor sits at its command prompt. On the 85-3 the
+    /// `JUMP FFF0` compatibility switch follows (the command only
+    /// transfers control, so entering `0xFFF0` directly is the same
+    /// journey), and the snapshot is the compatibility boot's prompt —
+    /// the state the run flows want anyway. Returns `None` when no
+    /// prompt shows (blank monitor, or a configured module owns the
+    /// boot and never reaches one).
+    fn capture_boot_state(&mut self) -> Option<BootState> {
+        if self.config.rom_module.is_some() {
+            // The BIOS transfers a configured module at power-on:
+            // there is no monitor prompt to capture.
+            return None;
+        }
+        let mut machine = Machine::new(self.config.model, &self.monitor_rom, None);
+        machine.reset();
+        let mut detector = PromptDetect::default();
+        let mut to_prompt = |machine: &mut Machine| {
+            for _ in 0..BOOT_CAPTURE_MAX_FRAMES {
+                machine.step_frame();
+                if detector.step(machine) {
+                    return true;
+                }
+            }
+            false
+        };
+        if !to_prompt(&mut machine) {
+            log::warn!("boot state not captured: no monitor prompt");
+            return None;
+        }
+        if self.config.model == Model::Pmd853 {
+            machine.cpu.pc = 0xFFF0; // `JUMP FFF0`
+            if !to_prompt(&mut machine) {
+                log::warn!("boot state not captured: no compatibility prompt");
+                return None;
+            }
+        }
+        let state = BootState {
+            sig: machine.bus.memory.monitor_signature(),
+            bytes: machine.save_state().ok()?,
+        };
+        self.boot_state = Some(state.clone());
+        Some(state)
+    }
+
+    /// Put the machine into its booted state for an IDE run: restore
+    /// the cached snapshot (capturing it first if needed), skipping
+    /// the monitor's boot and its memory test. Any module a previous
+    /// run attached is ejected first — the run wants the monitor's
+    /// own boot state. Returns `false` when no snapshot could be made
+    /// or restored; the caller then falls back to a real reset.
+    fn restore_booted(&mut self) -> bool {
+        self.eject_ide_module();
+        if self.config.rom_module.is_some() {
+            // A configured module owns the boot; nothing to restore.
+            return false;
+        }
+        let state = match &self.boot_state {
+            Some(state) if state.sig == self.machine.bus.memory.monitor_signature() => {
+                state.clone()
+            }
+            _ => match self.capture_boot_state() {
+                Some(state) => state,
+                None => return false,
+            },
+        };
+        if let Err(e) = self.machine.restore_state(&state.bytes) {
+            log::warn!("cannot restore the booted state: {e}");
+            return false;
+        }
+        self.frames_done = 0;
+        self.pacer.resync();
+        self.tape.play = false;
+        self.tape.was_recording = false;
+        if let Some(audio) = &mut self.audio {
+            audio.resync();
+        }
+        self.refresh_screen();
+        true
+    }
+
     // ----- project -----------------------------------------------------
 
     /// Open the project in `dir` (replacing any open project), show
@@ -920,9 +1114,11 @@ impl App {
         }
     }
 
-    /// Run the project (F5), the authentic way: reset to the
-    /// monitor, put the built file on the (flash) tape and type the
-    /// monitor's load command `MGLD` into the emulated keyboard. The
+    /// Run the project (F5), the authentic way: the machine goes to
+    /// its booted state (the cached snapshot when possible — the
+    /// boot's memory test skipped — a real reset otherwise), the
+    /// built file plays into the (flash) tape deck and the monitor's
+    /// load command `MGLD` is typed into the emulated keyboard. The
     /// monitor reads the header, flash-loads the blocks, checksums
     /// and — with the autostart target — the loader block hijacks the
     /// reader's return slot and runs the program, all for real.
@@ -940,7 +1136,9 @@ impl App {
             self.notify("Nothing was assembled: no code emitted");
             return;
         };
-        match &project.manifest.target {
+        let entry_hint = build.asm.entry;
+        let target = project.manifest.target.clone();
+        match &target {
             crate::project::Target::Tape { name, autostart } => {
                 // With autostart, the tape carries the wiki's autorun
                 // pair: a '?' file whose body is the small loader
@@ -963,9 +1161,7 @@ impl App {
                         ));
                         return;
                     }
-                    let entry = build
-                        .asm
-                        .entry
+                    let entry = entry_hint
                         .filter(|&e| (base..top).contains(&e))
                         .unwrap_or(base);
                     let loader = pmd85_core::tape::autorun_loader(
@@ -990,12 +1186,35 @@ impl App {
                         }
                     }
                 };
-                // A clean machine: the monitor must sit at its
-                // command prompt for the typed MGLD to land.
-                self.machine.reset();
-                self.frames_done = 0;
-                self.tape.tape.blocks.extend(blocks);
-                let file = self.tape.files().len() - 1;
+                // A clean machine at the monitor's command prompt for
+                // the typed MGLD to land: the cached booted state when
+                // possible (memory test skipped), a real reset
+                // otherwise.
+                let booted = self.restore_booted();
+                if !booted {
+                    self.machine.reset();
+                    self.frames_done = 0;
+                }
+                // The built blocks play straight into the deck as a
+                // session — the tape editor (and the saved session)
+                // stay untouched, so repeated runs do not pile files
+                // onto the tape.
+                let flash = self.tape.flash;
+                let mut items: Vec<PlayItem> = Vec::new();
+                for block in &blocks {
+                    if block.header.is_some() {
+                        items.push(PlayItem {
+                            data: block.header_bytes.clone(),
+                            head: true,
+                            flash,
+                        });
+                    }
+                    items.push(PlayItem {
+                        data: block.body_bytes.clone(),
+                        head: false,
+                        flash,
+                    });
+                }
                 // The monitor's load command, with our file number
                 // (0): MGLD 00. The tape session starts when the
                 // auto-typer's last key (the Enter of the command)
@@ -1003,15 +1222,16 @@ impl App {
                 // budget if it started during the boot.
                 use pmd85_core::keyboard::Key as key;
                 let mut script = vec![];
-                if *autostart && self.machine.bus.model == pmd85_core::Model::Pmd853 {
+                if *autostart && self.machine.bus.model == pmd85_core::Model::Pmd853 && !booted {
                     // Monitor 3 keeps its stack at 0xBF00, out of the
                     // autorun return slot's (0x7FFB) reach — but its
                     // `JUMP FFF0` switches it into the 85-2
                     // compatibility mode: a relocated copy at 0x8000
                     // and a fresh boot, after which the whole 85-2
                     // convention (the 7FFB slot, the reader at 8DC2)
-                    // holds verbatim. Switch first, then wait for the
-                    // compatibility boot before typing the load.
+                    // holds verbatim. Only needed without the cached
+                    // state — the snapshot already sits in the
+                    // compatibility mode.
                     script.extend(
                         [
                             key::J,
@@ -1042,7 +1262,12 @@ impl App {
                     ]
                     .map(AutoTypeItem::Press),
                 );
-                self.auto_type = Some(AutoType::new(&script, Some(file)));
+                let session = (!items.is_empty()).then(|| RunSession {
+                    items,
+                    flash,
+                    name: name.clone(),
+                });
+                self.auto_type = Some(AutoType::new(&script, session));
                 self.set_running(true);
             }
             crate::project::Target::Bin => self.run_project_direct(),
@@ -1077,12 +1302,11 @@ impl App {
                     );
                     return;
                 }
-                let entry = build
-                    .asm
-                    .entry
+                let entry = entry_hint
                     .filter(|&e| (base..top).contains(&e))
                     .unwrap_or(base);
                 let module = pmd85_core::module::make_rom_module(model, &image, base, entry);
+                self.ide_module = Some(module.clone());
                 self.machine.bus.memory.rom_module = Some(module);
                 self.machine.reset();
                 self.frames_done = 0;
@@ -1112,6 +1336,13 @@ impl App {
     /// Run the project directly (Ctrl+F5): inject the built image
     /// into RAM at its address and start the CPU at the entry point.
     /// No monitor, no tape — the fast inner loop for development.
+    /// The machine starts from the cached booted state when possible
+    /// (so the monitor's RAM variables are initialized and monitor
+    /// routines are callable); a bare reset otherwise, with the
+    /// boot-time shadow map dropped — until the monitor's first I/O
+    /// write the ROM is mirrored over the RAM the program lives in,
+    /// and an inject into that map is unreadable: the CPU would run
+    /// the ROM instead of the program.
     pub fn run_project_direct(&mut self) {
         if !self.build_project() {
             return;
@@ -1126,19 +1357,24 @@ impl App {
             self.notify("Nothing was assembled: no code emitted");
             return;
         };
-        self.machine.reset();
-        self.frames_done = 0;
+        let entry = build
+            .asm
+            .entry
+            .filter(|&e| (base..base.wrapping_add(image.len() as u16)).contains(&e))
+            .unwrap_or(base);
+        if !self.restore_booted() {
+            self.machine.reset();
+            self.frames_done = 0;
+            // The same thing the monitor's first I/O write does —
+            // without it the injected image cannot be read back.
+            self.machine.bus.memory.note_io_write();
+        }
         for (i, byte) in image.iter().enumerate() {
             self.machine
                 .bus
                 .memory
                 .write(base.wrapping_add(i as u16), *byte);
         }
-        let entry = build
-            .asm
-            .entry
-            .filter(|&e| (base..base.wrapping_add(image.len() as u16)).contains(&e))
-            .unwrap_or(base);
         self.machine.cpu.pc = entry;
         self.set_running(true);
         self.notify(format!("Running from {:04X} (direct)", entry));
@@ -1161,15 +1397,9 @@ impl App {
                 // The monitor's command loop cycles the keyboard
                 // scan column many times per frame; a change between
                 // consecutive frames means it is up and polling.
-                let scan = self.machine.bus.ppi_system_scan();
-                auto.scan_changes = if scan != auto.last_scan {
-                    auto.scan_changes.saturating_add(1)
-                } else {
-                    0
-                };
-                auto.last_scan = scan;
+                let prompt = auto.detector.step(&self.machine);
                 auto.waited += 1;
-                if auto.scan_changes >= AUTOTYPE_SCAN_FRAMES || auto.waited > AUTOTYPE_TIMEOUT {
+                if prompt || auto.waited > AUTOTYPE_TIMEOUT {
                     auto.waiting = false;
                     auto.phase = AUTOTYPE_SETTLE;
                 } else {
@@ -1209,14 +1439,18 @@ impl App {
                     // prompt before typing the rest.
                     auto.waiting = true;
                     auto.waited = 0;
-                    auto.scan_changes = 0;
+                    auto.detector = PromptDetect::default();
                 }
             }
         } else {
             self.auto_type = None;
         }
-        if let Some(file) = start_play {
-            self.play_tape_file(file);
+        if let Some(session) = start_play {
+            self.tape.play_run(session.items, &mut self.machine);
+            if session.flash {
+                self.notify(format!("Tape: flash-loading {}", session.name));
+            }
+            let _ = self.tape.pump(&mut self.machine);
         }
     }
 

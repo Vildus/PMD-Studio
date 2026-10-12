@@ -400,14 +400,17 @@ mod tests {
 
     /// F5 end to end, against every model's real monitor ROM: the
     /// built program becomes an autorun tape file (the loader block
-    /// at 0x7FD7 plus the program continuation), the machine resets
-    /// and boots, the app types the monitor's `MGLD 00`, the monitor
+    /// at 0x7FD7 plus the program continuation), the machine boots
+    /// from the cached booted state (a real reset when the capture
+    /// fails), the app types the monitor's `MGLD 00`, the monitor
     /// loads both blocks with the checksums for real, the loader
     /// hijacks the reader's return slot and the template program
     /// fills video RAM and halts. On the 85-3 the flow first types
     /// `JUMP FFF0`, switching Monitor 3 into its 85-2 compatibility
     /// mode (its native stack at 0xBF00 is out of the return slot's
-    /// reach), and waits for that reboot before the load command.
+    /// reach), and waits for that reboot before the load command —
+    /// unless the cached state already sits in the compatibility
+    /// mode, which is what the capture produces.
     #[test]
     fn run_project_loads_and_runs_the_program() {
         for model in [Model::Pmd852a, Model::Pmd852, Model::Pmd853, Model::Pmd851] {
@@ -421,10 +424,15 @@ mod tests {
             app.run_project();
             assert!(app.running, "running after F5");
             assert!(app.auto_type.is_some(), "the command is queued");
+            assert!(
+                app.tape.tape.blocks.is_empty(),
+                "runs do not add blocks to the tape"
+            );
 
             // Drive machine and auto-typer by frames, without pacing.
-            // The 85-3 needs the most frames: boot, the compatibility
-            // switch's reboot, then the load.
+            // The 85-3 needs the most frames: the compatibility
+            // switch's reboot (when the cached state missed), then the
+            // load.
             for _ in 0..4000 {
                 app.pump_auto_type();
                 app.run_frames(1);
@@ -434,6 +442,116 @@ mod tests {
             assert_eq!(ram[0x1000], 0x21, "program loaded at its ORG");
             assert_eq!(ram[0x1001], 0x00, "LXI H,0C000 low byte");
             assert_eq!(ram[0x1002], 0xC0, "LXI H,0C000 high byte");
+            assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
+            assert!(app.machine.cpu.halted, "the program ran to its HLT");
+        }
+    }
+
+    /// The booted-state cache: F5 on the 85-3 boots from the captured
+    /// snapshot (the monitor's memory test skipped) already sitting
+    /// in Monitor 3's compatibility mode, so the typed `MGLD` lands
+    /// within a handful of frames — far less than any real boot — and
+    /// runs to the end without the `JUMP FFF0` dance.
+    #[test]
+    fn run_project_boots_from_the_cached_state() {
+        let mut app = test_app();
+        app.rebuild_machine(&crate::app::MachineConfig {
+            model: Model::Pmd853,
+            monitor: None,
+            rom_module: None,
+        });
+        app.project = Some(test_project("e2e-snapshot"));
+        app.run_project();
+        assert!(app.boot_state.is_some(), "the booted state was captured");
+        assert!(
+            !app.machine.bus.memory.startup_map(),
+            "past the boot-time shadow map"
+        );
+        assert!(app.auto_type.is_some(), "MGLD is queued (no JUMP needed)");
+
+        // A real 85-3 boot takes well over this many frames; the
+        // snapshot has the machine at the prompt already.
+        for _ in 0..600 {
+            app.pump_auto_type();
+            app.run_frames(1);
+        }
+        assert!(app.auto_type.is_none(), "typing finished without a boot");
+        assert_eq!(
+            app.machine.bus.memory.ram[0xC000], 0x2A,
+            "the template filled video RAM"
+        );
+        assert!(app.machine.cpu.halted, "the program ran to its HLT");
+
+        // A second run restores the same cached state.
+        app.run_project();
+        assert!(!app.machine.bus.memory.startup_map());
+
+        // The authentic fallback when no snapshot can be captured: a
+        // real reset, the typed `JUMP FFF0` compatibility switch and
+        // the wait for its reboot before the load — the flow as it
+        // runs on a machine the cache cannot serve.
+        app.boot_state = None;
+        app.monitor_rom = vec![0u8; Model::Pmd853.monitor_size()];
+        app.run_project();
+        assert!(app.auto_type.is_some(), "JUMP FFF0 then MGLD is queued");
+        for _ in 0..4000 {
+            app.pump_auto_type();
+            app.run_frames(1);
+        }
+        assert!(app.auto_type.is_none(), "typing finished");
+        assert_eq!(
+            app.machine.bus.memory.ram[0xC000], 0x2A,
+            "the template filled video RAM"
+        );
+        assert!(app.machine.cpu.halted, "the program ran to its HLT");
+    }
+
+    /// Ctrl+F5 end to end, against every model's real monitor ROM:
+    /// the built image is injected into RAM at its ORG and the CPU
+    /// started at the entry point — from the cached booted state when
+    /// possible, else from a reset with the boot-time shadow map
+    /// dropped. (Until the monitor's first I/O write the ROM is
+    /// mirrored over the RAM the program lives in: an inject into
+    /// that map is unreadable, and the machine used to boot the
+    /// monitor instead of running the program.)
+    #[test]
+    fn run_project_direct_loads_and_runs_the_program() {
+        for model in [Model::Pmd852a, Model::Pmd852, Model::Pmd853, Model::Pmd851] {
+            let mut app = test_app();
+            app.rebuild_machine(&crate::app::MachineConfig {
+                model,
+                monitor: None,
+                rom_module: None,
+            });
+            let mut project = test_project("e2e-direct");
+            project.manifest.target = crate::project::Target::Bin;
+            app.project = Some(project);
+            app.run_project();
+            assert!(app.running, "running after Ctrl+F5");
+            assert!(app.auto_type.is_none(), "nothing is typed for a direct run");
+            assert!(!app.machine.bus.memory.startup_map());
+
+            for _ in 0..2000 {
+                app.run_frames(1);
+            }
+            let ram = &app.machine.bus.memory.ram;
+            assert_eq!(ram[0x1000], 0x21, "program injected at its ORG");
+            assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
+            assert!(app.machine.cpu.halted, "the program ran to its HLT");
+
+            // And once more with the cache defeated (no snapshot, no
+            // capture): the bare-reset path, with the boot-time shadow
+            // map dropped — the original bug: an image injected into
+            // the shadowed map was unreadable and the machine booted
+            // the monitor instead of running the program.
+            app.boot_state = None;
+            app.monitor_rom = vec![0u8; model.monitor_size()];
+            app.run_project();
+            for _ in 0..2000 {
+                app.run_frames(1);
+            }
+            let ram = &app.machine.bus.memory.ram;
+            assert_eq!(ram[0x1000], 0x21, "program injected at its ORG");
             assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
             assert!(app.machine.cpu.halted, "the program ran to its HLT");
         }
@@ -479,6 +597,49 @@ mod tests {
             assert_eq!(ram[0xC000], 0x2A, "the template filled video RAM");
             assert!(app.machine.cpu.halted, "the program ran to its HLT");
         }
+    }
+
+    /// The ROM module a project run attaches is transient: a warm
+    /// reboot ejects it (the connector returns to the configured
+    /// module, if any) — it never lingers past a reset.
+    #[test]
+    fn rom_module_run_is_ejected_by_reset() {
+        let mut app = test_app();
+        app.rebuild_machine(&crate::app::MachineConfig {
+            model: Model::Pmd852,
+            monitor: None,
+            rom_module: None,
+        });
+        let mut project = test_project("e2e-module-eject");
+        project.manifest.target = crate::project::Target::RomModule;
+        app.project = Some(project);
+        app.run_project();
+        assert!(
+            app.machine.bus.memory.rom_module.is_some(),
+            "the module is attached"
+        );
+        assert!(app.ide_module.is_some(), "and tracked as transient");
+        app.reset();
+        assert!(
+            app.machine.bus.memory.rom_module.is_none(),
+            "the reboot ejects the run's module"
+        );
+        assert!(app.ide_module.is_none());
+
+        // With a configured module, the reboot returns to it.
+        app.rebuild_machine(&crate::app::MachineConfig {
+            model: Model::Pmd852,
+            monitor: None,
+            rom_module: Some("basic2.rmm".into()),
+        });
+        assert!(app.machine.bus.memory.rom_module.is_some());
+        app.run_project();
+        assert!(app.machine.bus.memory.rom_module.is_some());
+        app.reset();
+        assert!(
+            app.machine.bus.memory.rom_module.is_some(),
+            "the configured module stays through reboots"
+        );
     }
 
     /// Window requests from the UI queue up for the winit loop and
