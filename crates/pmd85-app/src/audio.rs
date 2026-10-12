@@ -179,16 +179,18 @@ impl SpeakerOut {
         })
     }
 
-    /// Restart the sample timeline at cycle 0 and drop buffered samples.
+    /// Restart the sample timeline at `cycle` (the machine's current
+    /// cycle count) and drop buffered samples.
     ///
-    /// Must be called whenever the emulated machine is replaced by a
-    /// fresh one (model/module switch): the new machine's cycle counter
-    /// starts over while this object keeps rendering up to the old
-    /// machine's last cycle, which would otherwise silence the speaker
-    /// forever.
-    pub fn resync(&mut self) {
-        self.expander = EdgeExpander::new(self.sample_rate, 0, false);
-        self.tape_expander = EdgeExpander::new(self.sample_rate, 0, false);
+    /// Must be called whenever the emulated machine's cycle counter
+    /// jumps to a different timeline: a fresh machine after a
+    /// model/module switch (its counter starts over) or a state
+    /// restore (its counter jumps to the snapshot's value). Anchoring
+    /// at 0 instead would render the whole gap in one frame —
+    /// minutes of silence pushed through the ring.
+    pub fn resync(&mut self, cycle: u64) {
+        self.expander = EdgeExpander::new(self.sample_rate, cycle, false);
+        self.tape_expander = EdgeExpander::new(self.sample_rate, cycle, false);
         if let Ok(mut ring) = self.ring.lock() {
             ring.clear();
         }
@@ -312,11 +314,25 @@ mod tests {
         out.submit(Vec::new(), CYCLES_PER_FRAME * 100);
         assert!(out.ring.lock().unwrap().len() > 0);
         // The machine is rebuilt; without the resync the expander would
-        // never emit another sample.
-        out.resync();
+        // never emit another sample. A fresh machine's anchor is 0.
+        out.resync(0);
         out.submit(Vec::new(), CYCLES_PER_FRAME);
         let after = out.ring.lock().unwrap().len();
         assert!(after > 0, "speaker silent after machine rebuild");
+
+        // A state restore jumps the timeline instead of restarting it:
+        // the anchor must follow the machine's restored cycle count.
+        // (Anchoring at 0 would render the whole gap — here 100
+        // frames of samples — in a single submit.)
+        let jump = CYCLES_PER_FRAME * 100;
+        out.resync(jump);
+        out.submit(Vec::new(), jump + CYCLES_PER_FRAME);
+        let len = out.ring.lock().unwrap().len();
+        // One frame of samples (± device rate), not the buffered gap.
+        assert!(
+            len > 0 && len < 2500,
+            "the restore anchor renders just one frame ({len} samples)"
+        );
     }
 
     #[test]

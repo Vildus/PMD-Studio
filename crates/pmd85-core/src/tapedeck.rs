@@ -239,8 +239,12 @@ impl TapeDeck {
     }
 
     /// Full reset (machine reset): stop playback and abandon any
-    /// half-finished recording.
-    pub fn hard_reset(&mut self, uart: &mut I8251) {
+    /// half-finished recording. `cycle` re-anchors the deck's clock:
+    /// the monitor edges are stamped with it, so it must follow the
+    /// machine's cycle counter wherever that jumps (a state restore
+    /// replaces it) or the tape sound drifts onto a dead timeline.
+    pub fn hard_reset(&mut self, cycle: u64, uart: &mut I8251) {
+        self.cycle = cycle;
         self.stop(uart);
         self.rec_reset();
         self.clk = true;

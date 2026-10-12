@@ -271,3 +271,50 @@ fn snapshot_header_is_stable() {
     // Monitor 3: 8 KiB, CRC of its first byte lives at offset 11.
     assert_eq!(u16::from_le_bytes([snapshot[9], snapshot[10]]), 0x2000);
 }
+
+/// A state restore jumps the machine's cycle counter to the
+/// snapshot's timeline (the IDE's booted-state cache restores a
+/// snapshot taken on a long-running machine into one that has barely
+/// run). The tape deck's clock — which stamps the tape-sound monitor
+/// edges — must follow, or every edge lands on the dead pre-restore
+/// timeline: "in the past" of the audio renderer, where they fold
+/// into one level per frame and the tape sound degenerates into a
+/// frame-rate square wave until the app restarts.
+#[test]
+fn restore_reanchors_the_tape_deck_clock() {
+    // A snapshot from a long-running machine...
+    let long_run = boot();
+    let snapshot = long_run.save_state().unwrap();
+
+    // ...restored into a barely-run one: the cycle counter jumps
+    // forward, past whatever the machine and its deck had counted.
+    let monitor = monitor();
+    let mut fresh = Machine::new(Model::Pmd853, &monitor, None);
+    for _ in 0..10 {
+        fresh.step_frame();
+    }
+    fresh.restore_state(&snapshot).expect("restore");
+    let anchored = fresh.bus.total_cycles();
+    assert!(
+        anchored > 10 * pmd85_core::machine::CYCLES_PER_FRAME,
+        "the restore jumped the cycle counter forward"
+    );
+
+    // A playback session right after the restore: its monitor edges
+    // must be stamped on the restored timeline.
+    fresh.bus.tape_play_session(vec![PlayItem {
+        data: vec![0xFF; 128],
+        head: true,
+        flash: false,
+    }]);
+    fresh.step_frame();
+    let edges = fresh.bus.tape.take_monitor_edges();
+    assert!(!edges.is_empty(), "the session's lead tone produced edges");
+    for edge in &edges {
+        assert!(
+            edge.cycle >= anchored,
+            "monitor edge at cycle {} stamps the stale pre-restore timeline",
+            edge.cycle
+        );
+    }
+}

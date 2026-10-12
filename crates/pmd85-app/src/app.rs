@@ -820,7 +820,7 @@ impl App {
         // The new machine's cycle counter starts at 0 again; the
         // speaker timeline must follow or it renders nothing ever again.
         if let Some(audio) = &mut self.audio {
-            audio.resync();
+            audio.resync(self.machine.bus.total_cycles());
         }
         if monitor_missing {
             self.notify("Monitor ROM could not be loaded - machine will not boot");
@@ -1066,8 +1066,12 @@ impl App {
         self.pacer.resync();
         self.tape.play = false;
         self.tape.was_recording = false;
+        // The restored machine's cycle counter jumped to the
+        // snapshot's timeline; the speaker timeline must follow it
+        // (not just start over at 0, which would render the whole
+        // gap — minutes of nothing — in one frame).
         if let Some(audio) = &mut self.audio {
-            audio.resync();
+            audio.resync(self.machine.bus.total_cycles());
         }
         self.refresh_screen();
         true

@@ -100,7 +100,7 @@ impl MachineBus {
         self.ppi_rom.reset();
         self.pit.reset();
         self.uart.reset();
-        self.tape.hard_reset(&mut self.uart);
+        self.tape.hard_reset(self.total_cycles(), &mut self.uart);
         self.speaker_level = false;
         self.led = false;
         self.speaker_edges.clear();
@@ -214,7 +214,10 @@ impl MachineBus {
         }
         self.pending_speaker_edge = r.bool()?;
         self.total_cycles = r.u64()?;
-        self.tape.hard_reset(&mut self.uart);
+        // The deck's clock must follow the restored cycle counter
+        // (the snapshot was taken on another machine at another
+        // time): the tape sound is stamped with it.
+        self.tape.hard_reset(self.total_cycles, &mut self.uart);
         Ok(())
     }
 
