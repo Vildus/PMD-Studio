@@ -13,7 +13,7 @@ use pmd85_core::vram::{self, ColorProfile, HEIGHT, WIDTH};
 use pmd85_core::{Machine, Model};
 
 use crate::audio;
-use crate::catalog::RomCatalog;
+use crate::catalog::{RomCatalog, TapeLibrary};
 use crate::config::{self, AppSettings};
 use crate::gamepad::GamepadInput;
 use crate::project::Project;
@@ -234,6 +234,17 @@ impl TapeState {
         self.dirty = false;
         self.selected = None;
         Ok(())
+    }
+
+    /// Load a tape image from memory (a bundled library tape),
+    /// replacing the current tape. The caller stops playback first.
+    /// The opened tape is untitled: no path, so Save asks for one.
+    pub fn open_bytes(&mut self, bytes: &[u8]) {
+        self.play = false;
+        self.tape = Tape::parse(bytes);
+        self.path = None;
+        self.dirty = false;
+        self.selected = None;
     }
 
     /// Start a fresh empty tape. The caller stops playback first.
@@ -601,8 +612,12 @@ pub struct App {
     /// Working copy edited by the settings window.
     pub pending_config: MachineConfig,
 
-    pub rom_dir: PathBuf,
+    pub rom_dir: Option<PathBuf>,
     pub catalog: RomCatalog,
+    /// Bundled example tapes (the Tape window's library): from
+    /// `--tapes-dir` or the embedded images (`embed-tapes` builds);
+    /// `None` hides the section.
+    pub tape_library: Option<TapeLibrary>,
 
     /// The monitor ROM bytes the running machine was built from —
     /// what the scratch machine that captures the booted state (see
@@ -694,8 +709,33 @@ impl App {
     /// CLI/settings configuration; a missing ROM is not fatal (the
     /// machine comes up with a blank monitor and a notification).
     pub fn new(ctx: egui::Context, args: &crate::args::Args, settings: AppSettings) -> Self {
-        let rom_dir = args.rom_dir.clone().unwrap_or_else(default_rom_dir);
-        let catalog = RomCatalog::scan(&rom_dir);
+        // The ROM catalog: an explicit `--rom-dir` always scans that
+        // directory (the flag wins over embedding); otherwise
+        // `embed-roms` builds serve the images from the binary and
+        // plain builds scan the repository directory.
+        #[cfg(feature = "embed-roms")]
+        let catalog = match args.rom_dir.as_deref() {
+            Some(dir) => RomCatalog::scan(dir),
+            None => RomCatalog::from_embedded(crate::embedded::roms::ROM_FILES),
+        };
+        #[cfg(feature = "embed-roms")]
+        let rom_dir = args.rom_dir.clone();
+        #[cfg(not(feature = "embed-roms"))]
+        let (rom_dir, catalog) = {
+            let dir = args.rom_dir.clone().unwrap_or_else(default_rom_dir);
+            let catalog = RomCatalog::scan(&dir);
+            (Some(dir), catalog)
+        };
+
+        // The bundled tape library: `--tapes-dir` wins over embedding;
+        // plain builds have no library unless the flag is given.
+        #[cfg(feature = "embed-tapes")]
+        let tape_library = match args.tapes_dir.as_deref() {
+            Some(dir) => Some(TapeLibrary::scan(dir)),
+            None => Some(TapeLibrary::from_embedded(crate::embedded::tapes::TAPE_FILES)),
+        };
+        #[cfg(not(feature = "embed-tapes"))]
+        let tape_library = args.tapes_dir.as_deref().map(TapeLibrary::scan);
 
         let model = args
             .model
@@ -727,6 +767,7 @@ impl App {
             pending_config: config.clone(),
             rom_dir,
             catalog,
+            tape_library,
             monitor_rom: Vec::new(),
             config_module: None,
             ide_module: None,
@@ -867,17 +908,24 @@ impl App {
 
     /// Resolve a ROM reference to (bytes, missing). `None` falls back to
     /// `fallback` (a file name in the ROM directory). A name that is
-    /// not in the catalog is treated as a path.
+    /// not in the catalog is treated as a path — resolved inside
+    /// `rom_dir` when one is in play, as-is otherwise.
     fn load_rom(&self, name: &Option<String>, fallback: &str, model: Model) -> (Vec<u8>, bool) {
         let name = name.as_deref().unwrap_or(fallback);
-        let path = match self.catalog.find(name) {
-            Some(entry) => entry.path.clone(),
-            None => self.rom_dir.join(name),
+        let read = match self.catalog.find(name) {
+            Some(entry) => entry.read().map_err(|e| (name.to_string(), e)),
+            None => {
+                let path = match &self.rom_dir {
+                    Some(dir) => dir.join(name),
+                    None => PathBuf::from(name),
+                };
+                std::fs::read(&path).map_err(|e| (path.display().to_string(), e))
+            }
         };
-        match std::fs::read(&path) {
+        match read {
             Ok(bytes) => (bytes, false),
-            Err(e) => {
-                log::warn!("cannot read ROM {name:?} ({}): {e}", path.display());
+            Err((from, e)) => {
+                log::warn!("cannot read ROM {name:?} ({from}): {e}");
                 let size = if name.to_ascii_lowercase().ends_with(".rom") {
                     model.monitor_size()
                 } else {
@@ -959,6 +1007,28 @@ impl App {
     pub fn open_tape(&mut self, path: &std::path::Path) -> Result<(), String> {
         self.tape.stop_playback(&mut self.machine);
         self.tape.open(path)?;
+        let warnings = self.tape.tape.warnings.join("; ");
+        if !warnings.is_empty() {
+            self.notify(format!("Tape: {warnings}"));
+        }
+        Ok(())
+    }
+
+    /// Open a bundled library tape (the Tape window's TAPES row) as
+    /// the working tape: like [`App::open_tape`], but from the
+    /// library's source. The opened tape is untitled — Save asks for
+    /// a path — and parse warnings become notifications.
+    pub fn open_library_tape(&mut self, index: usize) -> Result<(), String> {
+        let entry = self
+            .tape_library
+            .as_ref()
+            .and_then(|l| l.get(index))
+            .ok_or_else(|| "no such tape in the library".to_string())?;
+        let bytes = entry
+            .read()
+            .map_err(|e| format!("{}: {e}", entry.file_name))?;
+        self.tape.stop_playback(&mut self.machine);
+        self.tape.open_bytes(&bytes);
         let warnings = self.tape.tape.warnings.join("; ");
         if !warnings.is_empty() {
             self.notify(format!("Tape: {warnings}"));
@@ -2334,6 +2404,9 @@ impl App {
 }
 
 /// Default ROM directory: the repo's `Rom/` next to the crate.
+/// (Unused in `embed-roms` builds, where the images live in the
+/// binary — kept for tests, which compare the two.)
+#[cfg(any(not(feature = "embed-roms"), test))]
 pub fn default_rom_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Rom")
 }

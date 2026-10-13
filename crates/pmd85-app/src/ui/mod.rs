@@ -33,6 +33,9 @@ pub struct UiState {
     pub debug: crate::ui::debug::DebugState,
     /// Metadata entry form for a pending tape import.
     pub tape_import: Option<crate::ui::tape::ImportDraft>,
+    /// The picked entry of the Tape window's bundled library (the
+    /// dropdown's selection; `None` = the first).
+    pub tape_library_pick: Option<usize>,
     /// A configuration awaiting the "restart machine?" confirmation.
     pub confirm_reboot: Option<crate::app::MachineConfig>,
     /// The color-customization expander in the settings window.
@@ -66,6 +69,7 @@ impl Default for UiState {
             dock: dock::default_dock(),
             debug: crate::ui::debug::DebugState::default(),
             tape_import: None,
+            tape_library_pick: None,
             confirm_reboot: None,
             theme_customize: false,
             theme_draft: None,
@@ -440,6 +444,145 @@ mod tests {
     fn keyboard_zoom_is_disabled() {
         let app = test_app();
         assert!(!app.ctx.options(|o| o.zoom_with_keyboard));
+    }
+
+    /// [`test_app`] built from explicit CLI arguments.
+    fn test_app_with(args: Args) -> App {
+        let mut app = App::new(egui::Context::default(), &args, AppSettings::default());
+        let dir = std::env::temp_dir().join(format!("pmd85-app-settings-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        app.set_settings_dir(dir);
+        app
+    }
+
+    /// `--tapes-dir` builds the Tape window's bundled library in any
+    /// build flavor, and library tapes open as the working tape.
+    #[test]
+    fn tapes_dir_builds_a_library() {
+        let tapes = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Tapes");
+        let args = Args {
+            tapes_dir: Some(tapes.clone()),
+            ..Args::default()
+        };
+        let mut app = test_app_with(args);
+        let library = app.tape_library.as_ref().expect("library from --tapes-dir");
+        assert!(!library.is_empty(), "the repository ships example tapes");
+        // Exactly the loadable images in the directory (untracked
+        // files come and go, so compare with what is actually there).
+        let loadable = std::fs::read_dir(&tapes)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .and_then(|x| x.to_str())
+                    .is_some_and(|x| x.eq_ignore_ascii_case("ptp") || x.eq_ignore_ascii_case("pmd"))
+            })
+            .count();
+        assert_eq!(library.len(), loadable);
+        for i in 0..library.len() {
+            let name = &library.get(i).unwrap().file_name;
+            assert!(name.ends_with(".ptp") || name.ends_with(".pmd"));
+        }
+        app.open_library_tape(0).unwrap();
+        assert!(
+            !app.tape.tape.blocks.is_empty(),
+            "the first library tape has blocks"
+        );
+        // An embedded/library tape is untitled: Save asks for a path.
+        assert_eq!(app.tape.path, None);
+        assert!(!app.tape.dirty);
+        // Opening a library tape out of range is an error, not a panic.
+        assert!(app.open_library_tape(999).is_err());
+    }
+
+    /// A plain App (no `--tapes-dir`) has no library section unless
+    /// the build embeds tapes.
+    #[cfg(not(feature = "embed-tapes"))]
+    #[test]
+    fn no_library_without_a_source() {
+        let app = test_app();
+        assert!(app.tape_library.is_none());
+    }
+
+    /// The embedded catalog (`embed-roms`) is exactly the repository
+    /// Rom/ directory: the same entries, the same bytes.
+    #[cfg(feature = "embed-roms")]
+    #[test]
+    fn embedded_catalog_round_trips_the_rom_directory() {
+        let disk = crate::catalog::RomCatalog::scan(crate::app::default_rom_dir());
+        let embedded = crate::catalog::RomCatalog::from_embedded(crate::embedded::roms::ROM_FILES);
+        for (which, disk, embedded) in [
+            ("monitors", disk.monitors(), embedded.monitors()),
+            ("modules", disk.modules(), embedded.modules()),
+        ] {
+            assert_eq!(
+                disk.iter().map(|e| &e.file_name).collect::<Vec<_>>(),
+                embedded.iter().map(|e| &e.file_name).collect::<Vec<_>>(),
+                "the same {which} in both catalogs"
+            );
+        }
+        // Each entry serves the very bytes the file on disk has
+        // (rom-list.txt descriptions made it in too).
+        for entry in embedded.monitors().iter().chain(embedded.modules()) {
+            let disk_entry = disk.find(&entry.file_name).unwrap();
+            assert_eq!(entry.read().unwrap(), disk_entry.read().unwrap());
+            assert_eq!(entry.description, disk_entry.description);
+        }
+        assert!(
+            embedded
+                .find(Model::Pmd853.default_monitor())
+                .unwrap()
+                .description
+                .contains("monitor"),
+            "rom-list.txt descriptions are embedded"
+        );
+    }
+
+    /// The embedded catalog actually boots a machine (the whole
+    /// point: an installed binary needs no files next to it).
+    #[cfg(feature = "embed-roms")]
+    #[test]
+    fn embedded_monitor_boots_the_machine() {
+        let mut app = test_app();
+        let monitor = app
+            .catalog
+            .find(Model::Pmd853.default_monitor())
+            .unwrap()
+            .read()
+            .unwrap();
+        assert!(!monitor.iter().all(|&b| b == 0), "a real monitor ROM");
+        // The machine was built from the embedded monitor bytes.
+        assert_eq!(app.monitor_rom, monitor);
+        for _ in 0..100 {
+            app.advance();
+        }
+    }
+
+    /// Every embedded tape parses into a tape with blocks.
+    #[cfg(feature = "embed-tapes")]
+    #[test]
+    fn every_embedded_tape_parses() {
+        for (name, bytes) in crate::embedded::tapes::TAPE_FILES {
+            let tape = pmd85_core::tape::Tape::parse(bytes);
+            assert!(!tape.blocks.is_empty(), "{name} has no blocks");
+        }
+    }
+
+    /// The embedded tapes (`embed-tapes`) show up as the Tape
+    /// window's library and open as the working tape.
+    #[cfg(feature = "embed-tapes")]
+    #[test]
+    fn embedded_tapes_open_as_the_working_tape() {
+        let mut app = test_app();
+        let library = app.tape_library.as_ref().expect("embedded library");
+        assert!(!library.is_empty());
+        app.open_library_tape(0).unwrap();
+        assert!(!app.tape.tape.blocks.is_empty());
+        assert_eq!(app.tape.path, None, "an embedded tape opens untitled");
+        app.advance();
     }
 
     /// F5 end to end, against every model's real monitor ROM: the

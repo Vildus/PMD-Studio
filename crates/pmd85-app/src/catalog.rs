@@ -21,17 +21,33 @@ pub struct RomEntry {
     /// Description from `rom-list.txt`, if the file is listed there
     /// (joined bullet lines, original wording).
     pub description: String,
+    /// Embedded contents (portable builds): `Some` when the entry
+    /// comes from the binary instead of `path`.
+    pub embedded: Option<&'static [u8]>,
 }
 
 impl RomEntry {
     /// Human-readable size ("10 kB").
     pub fn size_label(&self) -> String {
-        let kb = self.size as f64 / 1024.0;
-        if kb >= 1.0 {
-            format!("{kb:.0} kB")
-        } else {
-            format!("{} B", self.size)
+        size_label(self.size)
+    }
+
+    /// The entry's contents: the embedded bytes, or the file on disk.
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        match self.embedded {
+            Some(bytes) => Ok(bytes.to_vec()),
+            None => fs::read(&self.path),
         }
+    }
+}
+
+/// Human-readable file size ("10 kB").
+fn size_label(size: u64) -> String {
+    let kb = size as f64 / 1024.0;
+    if kb >= 1.0 {
+        format!("{kb:.0} kB")
+    } else {
+        format!("{size} B")
     }
 }
 
@@ -108,6 +124,7 @@ impl RomCatalog {
                 path,
                 size: meta.len(),
                 description,
+                embedded: None,
             };
             match ext.as_str() {
                 "rom" => monitors.push(rom),
@@ -134,6 +151,157 @@ impl RomCatalog {
             .iter()
             .chain(self.modules.iter())
             .find(|e| e.file_name == file_name)
+    }
+
+    /// Build the catalog from the embedded file table (`embed-roms`
+    /// builds): the same classification and `rom-list.txt`
+    /// descriptions as a directory scan, with the bytes served from
+    /// the binary instead of disk.
+    #[cfg(any(feature = "embed-roms", test))]
+    pub fn from_embedded(files: &'static [(&'static str, &'static [u8])]) -> Self {
+        let mut descriptions = HashMap::new();
+        if let Some((_, bytes)) = files.iter().find(|(name, _)| *name == "rom-list.txt") {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                descriptions = parse_rom_list(text);
+            }
+        }
+        let mut monitors = Vec::new();
+        let mut modules = Vec::new();
+        for (file_name, bytes) in files {
+            let ext = file_name
+                .rsplit_once('.')
+                .map(|(_, e)| e.to_ascii_lowercase())
+                .unwrap_or_default();
+            let entry = RomEntry {
+                file_name: file_name.to_string(),
+                path: PathBuf::new(),
+                size: bytes.len() as u64,
+                description: descriptions.get(*file_name).cloned().unwrap_or_default(),
+                embedded: Some(bytes),
+            };
+            match ext.as_str() {
+                "rom" => monitors.push(entry),
+                "rmm" => modules.push(entry),
+                _ => {}
+            }
+        }
+        monitors.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        modules.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        RomCatalog { monitors, modules }
+    }
+}
+
+/// One bundled tape image: a `.ptp`/`.pmd` file on disk (a
+/// `--tapes-dir` directory) or embedded in the binary (the
+/// `embed-tapes` build flavor).
+#[derive(Clone, Debug)]
+pub struct TapeEntry {
+    /// File name (`games-2.ptp`).
+    pub file_name: String,
+    /// File size in bytes.
+    pub size: u64,
+    source: TapeSource,
+}
+
+#[derive(Clone, Debug)]
+enum TapeSource {
+    File(PathBuf),
+    /// Only constructed by [`TapeLibrary::from_embedded`] (compiled
+    /// under `embed-tapes` and for tests); unmatched-but-unbuilt in
+    /// plain builds.
+    #[allow(dead_code)]
+    Embedded(&'static [u8]),
+}
+
+impl TapeEntry {
+    /// Human-readable size ("60 kB").
+    pub fn size_label(&self) -> String {
+        size_label(self.size)
+    }
+
+    /// The tape image contents: the embedded bytes, or the file.
+    pub fn read(&self) -> std::io::Result<Vec<u8>> {
+        match &self.source {
+            TapeSource::Embedded(bytes) => Ok(bytes.to_vec()),
+            TapeSource::File(path) => fs::read(path),
+        }
+    }
+}
+
+/// The bundled example tapes shown in the Tape window: scanned from
+/// a directory (`--tapes-dir`) or embedded in the binary
+/// (`embed-tapes`). `None` in the App means no library at all —
+/// plain builds without `--tapes-dir` show no section.
+#[derive(Clone, Debug, Default)]
+pub struct TapeLibrary {
+    entries: Vec<TapeEntry>,
+}
+
+impl TapeLibrary {
+    /// Scan `dir` for `.ptp`/`.pmd` tape images (missing directory:
+    /// an empty library, like a missing ROM directory).
+    pub fn scan(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(ext) = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+            else {
+                continue;
+            };
+            if !matches!(ext.as_str(), "ptp" | "pmd") {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            entries.push(TapeEntry {
+                file_name: file_name.to_string(),
+                size: meta.len(),
+                source: TapeSource::File(path),
+            });
+        }
+        entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        TapeLibrary { entries }
+    }
+
+    /// Build the library from the embedded file table (`embed-tapes`
+    /// builds): every table entry is a tape image.
+    #[cfg(any(feature = "embed-tapes", test))]
+    pub fn from_embedded(files: &'static [(&'static str, &'static [u8])]) -> Self {
+        let mut entries = Vec::new();
+        for (file_name, bytes) in files {
+            entries.push(TapeEntry {
+                file_name: file_name.to_string(),
+                size: bytes.len() as u64,
+                source: TapeSource::Embedded(bytes),
+            });
+        }
+        // The build script emits the table sorted already; sort here
+        // anyway so hand-made tables behave the same.
+        entries.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+        TapeLibrary { entries }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn get(&self, index: usize) -> Option<&TapeEntry> {
+        self.entries.get(index)
     }
 }
 
@@ -210,5 +378,61 @@ mod tests {
         let catalog = RomCatalog::scan("/nonexistent-pmd85-rom-dir");
         assert!(catalog.monitors().is_empty());
         assert!(catalog.modules().is_empty());
+    }
+
+    #[test]
+    fn embedded_table_builds_the_same_catalog() {
+        // A synthetic table, shaped like the one the build script
+        // generates for the `embed-roms` feature.
+        static FILES: &[(&str, &[u8])] = &[
+            ("basic3.rmm", &[1, 2, 3]),
+            ("monit3.rom", &[0x55; 8]),
+            ("notarom.txt", b"ignored"),
+            ("rom-list.txt", SAMPLE_LIST.as_bytes()),
+        ];
+        let catalog = RomCatalog::from_embedded(FILES);
+        assert_eq!(catalog.monitors().len(), 1);
+        assert_eq!(catalog.modules().len(), 1);
+        // Classification and descriptions work like a scan.
+        let monitor = catalog.find("monit3.rom").unwrap();
+        assert!(monitor.description.contains("0E000h"));
+        assert_eq!(monitor.size, 8);
+        // The bytes come from the table, not a file.
+        assert_eq!(monitor.read().unwrap(), vec![0x55u8; 8]);
+        assert!(catalog.find("notarom.txt").is_none());
+    }
+
+    #[test]
+    fn tape_library_scans_loadable_images() {
+        let dir = std::env::temp_dir().join(format!("pmd85-tapes-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("b.pmd"), b"old").unwrap();
+        fs::write(dir.join("a.ptp"), b"ptp").unwrap();
+        fs::write(dir.join("notes.txt"), b"no").unwrap();
+        fs::write(dir.join("games.rmm"), b"no").unwrap();
+        let library = TapeLibrary::scan(&dir);
+        assert_eq!(library.len(), 2);
+        // Sorted, and only the loadable formats.
+        assert_eq!(library.get(0).unwrap().file_name, "a.ptp");
+        assert_eq!(library.get(1).unwrap().file_name, "b.pmd");
+        assert_eq!(library.get(0).unwrap().read().unwrap(), b"ptp".to_vec());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tape_library_from_embedded_sorts_and_reads() {
+        static FILES: &[(&str, &[u8])] = &[("b.ptp", &[9]), ("a.ptp", &[7])];
+        let library = TapeLibrary::from_embedded(FILES);
+        assert_eq!(library.len(), 2);
+        assert_eq!(library.get(0).unwrap().file_name, "a.ptp");
+        assert_eq!(library.get(0).unwrap().size, 1);
+        assert_eq!(library.get(0).unwrap().read().unwrap(), vec![7]);
+        assert!(library.get(2).is_none());
+    }
+
+    #[test]
+    fn missing_tapes_directory_is_an_empty_library() {
+        let library = TapeLibrary::scan("/nonexistent-pmd85-tapes-dir");
+        assert!(library.is_empty());
     }
 }

@@ -38,6 +38,7 @@ pub struct ImportDraft {
 pub fn ui(ui: &mut egui::Ui, app: &mut App) {
     let theme = app.active_theme_data();
     toolbar(ui, app, &theme);
+    library(ui, app, &theme);
     ui.add_space(4.0);
     // Reserve the bottom strip first (a top-down child that fills the
     // rest would leave no room for it), then let the table have
@@ -49,6 +50,64 @@ pub fn ui(ui: &mut egui::Ui, app: &mut App) {
             status(ui, app, &theme);
         });
     file_list(ui, app, &theme);
+}
+
+/// The bundled-tapes row: a dropdown picks a library tape, the Load
+/// button opens it as the working tape. Hidden when there is no
+/// library (plain builds without `--tapes-dir`).
+fn library(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
+    let Some(lib) = &app.tape_library else {
+        return;
+    };
+    if lib.is_empty() {
+        return;
+    }
+    let count = lib.len();
+    // Collect the labels first: the Load button mutates the app
+    // through it, so the library cannot stay borrowed.
+    let labels: Vec<String> = (0..count)
+        .map(|i| {
+            let entry = lib.get(i).unwrap();
+            format!("{} ({})", entry.file_name, entry.size_label())
+        })
+        .collect();
+    // The pick survives tape loads; clamp it (the library can only
+    // change between runs, but stay safe).
+    let mut selected = app
+        .ui
+        .tape_library_pick
+        .filter(|&i| i < count)
+        .unwrap_or(0);
+    ui.add_space(2.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("TAPES")
+                .size(11.0)
+                .strong()
+                .color(Theme::color(&theme.accent)),
+        )
+        .on_hover_text("Bundled example tapes: pick one and load it\n\
+                        as the working tape, then select a file and\n\
+                        press Play");
+        egui::ComboBox::from_id_salt("bundled-tapes")
+            .selected_text(&labels[selected])
+            .show_ui(ui, |ui| {
+                for (i, label) in labels.iter().enumerate() {
+                    ui.selectable_value(&mut selected, i, label.clone());
+                }
+            });
+        if ui
+            .button("Load")
+            .on_hover_text("Open the picked tape, replacing the working one")
+            .clicked()
+        {
+            if let Err(e) = app.open_library_tape(selected) {
+                app.notify(format!("Tape: {e}"));
+            }
+        }
+    });
+    // Remember what the dropdown shows.
+    app.ui.tape_library_pick = Some(selected);
 }
 
 /// New / Open / Save / Import / Export + per-file actions.

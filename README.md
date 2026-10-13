@@ -26,7 +26,8 @@ direct RAM-inject run mode, and ROM-module targets.
   monitor ROM to a working command line
 - **Authentic tape** — `.ptp` cassette images, a full tape editor,
   real modulated playback *or* flash-loading, saves (`MGSV`)
-  harvested back into the tape
+  harvested back into the tape, the archive's example tapes one
+  click away in the Tape window
 - **Assembler IDE** — projects, find/replace, go-to, problems panel
   with jump-to-error, build + export to tape / ROM module / raw
   binary, [a lenient monitor-style dialect](docs/asm-dialect.md)
@@ -51,16 +52,37 @@ Then type `DUMP 0100` on the monitor command line, or create a
 project in the Project tab and press **Run**.
 
 CLI options: `--model <85-1|85-2|85-2A|85-3>`, `--monitor <path>`,
-`--rom-module <path>`, `--rom-dir <dir>`, `--mute`. The host
-keyboard is the emulated one (F1–F12 are the PMD's K0–K11, `Esc`
-and `Ctrl` are STOP); hold Left `Alt` for host shortcuts
-(quick-save/load state, debugger stepping). See
+`--rom-module <path>`, `--rom-dir <dir>`, `--tapes-dir <dir>`,
+`--mute`. The host keyboard is the emulated one (F1–F12 are the
+PMD's K0–K11, `Esc` and `Ctrl` are STOP); hold Left `Alt` for host
+shortcuts (quick-save/load state, debugger stepping). See
 [the emulator docs](docs/emulator.md) for the full keyboard mapping
 and everything else.
 
 Monitor ROMs live in `Rom/` (see `Rom/rom-list.txt`) and are not
 part of this repository's source; the boot tests require them to be
 present.
+
+### Portable builds
+
+Any of the resource directories can be embedded into the binary
+instead of read from disk:
+
+```
+cargo build --release -p pmd85-app --features portable
+```
+
+- `embed-roms` — the monitor ROMs and ROM modules from `Rom/` ship
+  inside the binary; an installed copy runs anywhere without the
+  files next to it (about +0.6 MB)
+- `embed-tapes` — the example tapes from `Tapes/` ship inside the
+  binary and appear as the Tape window's bundled library
+  (about +1.0 MB)
+- `portable` — both of the above (+1.6 MB in total)
+
+`--rom-dir`/`--tapes-dir` still override the embedding and scan a
+directory; `--tapes-dir` also adds the bundled-tape library to a
+build without `embed-tapes`.
 
 ## Documentation
 

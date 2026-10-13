@@ -35,3 +35,19 @@ directories = "6"
 # PNG decode of the embedded app icon (nothing else).
 image = { version = "0.25", default-features = false, features = ["png"] }
 gilrs = "0.11.2"
+
+[features]
+default = []
+# Monitor and ROM-module images (the repository Rom/ directory) ship
+# inside the binary: the catalog serves them from memory and an
+# installed binary no longer needs the ROM files next to it.
+# `--rom-dir` still overrides and scans a directory.
+embed-roms = []
+# The bundled example tapes (the repository Tapes/ directory) ship
+# inside the binary and appear in the Tape window. `--tapes-dir`
+# still overrides and scans a directory (it also works in builds
+# without this feature).
+embed-tapes = []
+# The full portable build: both of the above, nothing on disk.
+portable = ["embed-roms", "embed-tapes"]
+

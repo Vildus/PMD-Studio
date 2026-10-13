@@ -22,8 +22,19 @@ Options:
 - `--model <name>` — `85-1`, `85-2`, `85-2A` or `85-3` (default `85-3`)
 - `--monitor <path>` — monitor ROM image (default `Rom/<model's monitor>.rom`)
 - `--rom-module <path>` — optional 8 KiB ROM module (`.rmm`) at 0x8000
-- `--rom-dir <dir>` — ROM directory (default: the repository's `Rom/`)
+- `--rom-dir <dir>` — ROM directory (default: the repository's `Rom/`,
+  or the images embedded by the `embed-roms` build feature)
+- `--tapes-dir <dir>` — bundled example tapes for the Tape window
+  (default: the images embedded by the `embed-tapes` build feature,
+  none otherwise)
 - `--mute` — disable speaker output
+
+Build features pick what ships inside the binary instead of being
+read from disk: `embed-roms` (the monitor ROMs and modules, +0.6 MB),
+`embed-tapes` (the example tapes, +1.0 MB) and `portable` (both,
++1.6 MB) — a `portable` build runs anywhere with no files next to
+it. The `--rom-dir`/`--tapes-dir` options override the embedding
+and scan a directory.
 
 Speaker audio plays through the default output device. The PMD 85
 sound circuit is emulated as a whole: PC2 of the system 8255 drives
@@ -90,6 +101,13 @@ optionally audible in the speaker); flash-loading can instead
 intercept the monitor's read loops and deliver block data directly,
 with a fallback to the real signal for custom readers. The loaded
 tape (including unsaved edits) is restored on the next start.
+
+The toolbar's **TAPES** row lists the bundled example tapes (the
+repository `Tapes/` directory through `--tapes-dir`, or the images
+embedded by the `embed-tapes`/`portable` build features): pick one
+in the dropdown and press Load to open it as the working tape, then
+select a file and press Play like with any tape. Opened library
+tapes are untitled — Save asks for a path.
 
 ## Save states
 

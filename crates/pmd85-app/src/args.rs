@@ -12,8 +12,13 @@ pub struct Args {
     pub monitor: Option<String>,
     /// `--rom-module path.rmm`.
     pub rom_module: Option<String>,
-    /// `--rom-dir DIR` (default: the repository `Rom/` directory).
+    /// `--rom-dir DIR` (default: the repository `Rom/` directory,
+    /// or the embedded images in `embed-roms` builds).
     pub rom_dir: Option<PathBuf>,
+    /// `--tapes-dir DIR`: bundled example tapes for the Tape window
+    /// (default: embedded images in `embed-tapes` builds, none
+    /// otherwise).
+    pub tapes_dir: Option<PathBuf>,
     /// `--mute`.
     pub mute: bool,
 }
@@ -24,11 +29,12 @@ pub fn usage() -> &'static str {
      usage: pmd85 [options]\n\
      \n\
      options:\n\
-       --model <m>         85-1 | 85-2 | 85-2A | 85-3 (default 85-3)\n\
-       --monitor <file>    monitor ROM file\n\
-       --rom-module <file> ROM module (.rmm) file\n\
-       --rom-dir <dir>     ROM directory (default: Rom/)\n\
-       --mute              start with the speaker muted"
+     \x20 --model <m>         85-1 | 85-2 | 85-2A | 85-3 (default 85-3)\n\
+     \x20 --monitor <file>    monitor ROM file\n\
+     \x20 --rom-module <file> ROM module (.rmm) file\n\
+     \x20 --rom-dir <dir>     ROM directory (default: Rom/)\n\
+     \x20 --tapes-dir <dir>   bundled example tapes for the Tape window\n\
+     \x20 --mute              start with the speaker muted"
 }
 
 pub fn parse() -> Args {
@@ -53,6 +59,13 @@ pub fn parse() -> Args {
                 args.rom_dir = Some(
                     it.next()
                         .unwrap_or_else(|| missing_value("--rom-dir"))
+                        .into(),
+                )
+            }
+            "--tapes-dir" => {
+                args.tapes_dir = Some(
+                    it.next()
+                        .unwrap_or_else(|| missing_value("--tapes-dir"))
                         .into(),
                 )
             }
@@ -86,6 +99,7 @@ mod tests {
             "--monitor",
             "--rom-module",
             "--rom-dir",
+            "--tapes-dir",
             "--mute",
         ] {
             assert!(usage.contains(flag), "{flag} missing from usage");
