@@ -781,6 +781,12 @@ impl App {
         app.active_theme = theme.name.clone();
         Theme::install_fonts(&app.ctx);
         theme.apply(&app.ctx);
+        // egui's built-in zoom hotkeys (Ctrl+=/-/0) live on chords the
+        // machine owns: host Ctrl is STOP, so STOP + `{ }` (Ctrl+=)
+        // would zoom the GUI instead of toggling Caps-Lock — likewise
+        // STOP + `_ =` and STOP + `0`. Host shortcuts stay in the
+        // left-Alt namespace; keyboard zoom is off entirely.
+        app.ctx.options_mut(|options| options.zoom_with_keyboard = false);
 
         // Audio: open the device unless muted from the start.
         if !args.mute && !app.settings.mute {

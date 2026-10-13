@@ -432,6 +432,16 @@ mod tests {
         assert!(app.screen.is_some(), "screen texture created");
     }
 
+    /// Host Ctrl is STOP, so egui's default zoom hotkeys (Ctrl+=/-/0)
+    /// would hijack the machine chords STOP + `{ }` / `_ =` / `0`
+    /// (STOP + `{` toggles Caps-Lock on the 85-3). The App must turn
+    /// the built-in keyboard zoom off.
+    #[test]
+    fn keyboard_zoom_is_disabled() {
+        let app = test_app();
+        assert!(!app.ctx.options(|o| o.zoom_with_keyboard));
+    }
+
     /// F5 end to end, against every model's real monitor ROM: the
     /// built program becomes an autorun tape file (the loader block
     /// at 0x7FD7 plus the program continuation), the machine boots
