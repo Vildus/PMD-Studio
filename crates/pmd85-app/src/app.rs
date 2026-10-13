@@ -1667,6 +1667,9 @@ impl App {
                 .write(base.wrapping_add(i as u16), *byte);
         }
         self.machine.cpu.pc = entry;
+        // A monitor load typed by an earlier Run would keep typing
+        // into the program — a direct run owns the machine now.
+        self.auto_type = None;
         self.set_running(true);
         self.notify(format!("Running from {:04X} (direct)", entry));
     }

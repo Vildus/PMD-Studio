@@ -11,9 +11,12 @@
 //! toolbar, find bar and file tree stay put (the tab body itself
 //! does not scroll).
 //!
-//! There are no keyboard shortcuts to speak of: the host keyboard is
-//! the emulated machine's (F5 is its K4 key, Ctrl its STOP key), so
-//! the IDE is driven entirely by its buttons.
+//! Keyboard shortcuts exist only inside the editor: while it has
+//! keyboard focus egui consumes the keystrokes, so they can never
+//! leak into the emulated machine (whose keyboard they would
+//! otherwise be — F5 is its K4 key, Ctrl its STOP key). Elsewhere
+//! the host keyboard stays the machine's and the IDE is driven by
+//! its buttons.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -179,7 +182,7 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .on_hover_text(
                 "Assemble the current buffers and write the artifact\n\
                  (a .ptp / .rmm / .bin, per the target) into the\n\
-                 project's release/ folder",
+                 project's release/ folder (Ctrl+B)",
             )
             .clicked()
         {
@@ -201,7 +204,7 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .on_hover_text(
                 "Build, then load through the monitor: the file goes on the\n\
                  (flash) tape and the monitor's MGLD command is typed for\n\
-                 you \u{2014} checksums and autorun run for real",
+                 you \u{2014} checksums and autorun run for real (F5)",
             )
             .clicked()
         {
@@ -211,7 +214,8 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .button(format!("{} Run direct", icon::SKIP_FORWARD))
             .on_hover_text(
                 "Build, then inject the image into RAM at its address and\n\
-                 start the CPU at the entry point \u{2014} no monitor, no tape",
+                 start the CPU at the entry point \u{2014} no monitor, no\n\
+                 tape (Ctrl+F5)",
             )
             .clicked()
         {
@@ -269,27 +273,29 @@ fn toolbar(ui: &mut egui::Ui, app: &mut App, theme: &Theme) {
             .unwrap_or_else(|| format!("{} Save", icon::FLOPPY_DISK));
         if ui
             .button(save_label)
-            .on_hover_text("Write the edited buffer to disk")
+            .on_hover_text("Write the edited buffer to disk (Ctrl+S)")
             .clicked()
         {
             app.save_project_file();
         }
         if ui
             .button(icon::MAGNIFYING_GLASS.to_string())
-            .on_hover_text("Find and replace in the active buffer")
+            .on_hover_text("Find and replace in the active buffer (Ctrl+F)")
             .clicked()
         {
             if let Some(project) = app.project.as_mut() {
                 project.find.open = !project.find.open;
                 if project.find.open {
                     project.find.active = 0;
+                    // Reopening re-reveals the active match.
+                    project.find.revealed = None;
                     ui.ctx().memory_mut(|m| m.request_focus(find_query_id()));
                 }
             }
         }
         if ui
             .button(icon::ARROW_BEND_UP_RIGHT.to_string())
-            .on_hover_text("Go to a line in the active buffer")
+            .on_hover_text("Go to a line in the active buffer (Ctrl+G)")
             .clicked()
         {
             if let Some(project) = app.project.as_mut() {
@@ -632,7 +638,7 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
     // The editor scrolls inside its own area (the tab body does not
     // scroll): gutter and text scroll together, the toolbar, find
     // bar and file tree stay put.
-    let response = egui::ScrollArea::both()
+    let scroll = egui::ScrollArea::both()
         .id_salt(("project-editor-scroll", &path))
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -640,24 +646,25 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
             // them, the same font, and the TextEdit's own top frame
             // padding (its default margin is 2 px) added above the line
             // numbers so the rows line up.
-            let response = ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                let width = gutter_width(ui, &font_id, lines);
-                ui.vertical(|ui| {
-                    ui.set_width(width);
-                    ui.add_space(2.0);
-                    gutter(ui, &font_id, lines, theme);
-                });
-                ui.add(
+            let text_output = ui
+                .horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let width = gutter_width(ui, &font_id, lines);
+                    ui.vertical(|ui| {
+                        ui.set_width(width);
+                        ui.add_space(2.0);
+                        gutter(ui, &font_id, lines, theme);
+                    });
                     TextEdit::multiline(&mut text)
                         .id(id)
                         .font(egui::TextStyle::Monospace)
                         .desired_rows(lines)
                         .desired_width(f32::INFINITY)
                         .lock_focus(true)
-                        .layouter(&mut layouter),
-                )
-            });
+                        .layouter(&mut layouter)
+                        .show(ui)
+                })
+                .inner;
 
             // A pending jump: cursor onto the spot, view scrolled to
             // it (this ui sits inside the scroll area, so the scroll
@@ -665,12 +672,28 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
             if let Some(jump) = jump.filter(|j| j.file == path) {
                 let char_pos = char_offset(&text, jump.line, jump.col);
                 set_cursor(ui.ctx(), id, char_pos);
-                let row = ui.ctx().fonts_mut(|f| f.row_height(&font_id));
-                let rect = response
-                    .inner
-                    .rect
-                    .translate(egui::vec2(0.0, (jump.line as f32 - 0.5) * row));
-                ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                // Scroll to the row rect as the galley actually laid
+                // it out, not a row-height guess: the TextEdit draws
+                // the galley at `galley_pos` (minus its left edge),
+                // so translating a row's rect by that origin gives
+                // its exact place in the scrolled content — immune to
+                // font metric subtleties, and carrying the column
+                // too, so wide lines scroll horizontally.
+                let galley = &text_output.galley;
+                let origin = text_output.galley_pos - egui::vec2(galley.rect.left(), 0.0);
+                let rect = galley
+                    .rows
+                    .get(jump.line.saturating_sub(1))
+                    .map(|r| r.rect().translate(origin.to_vec2()))
+                    .unwrap_or_else(|| galley.rect.translate(origin.to_vec2()));
+                // No animation: an IDE jump should land on the line
+                // immediately (an eased scroll would also make the
+                // position hard to pin down in tests).
+                ui.scroll_to_rect_animation(
+                    rect,
+                    Some(egui::Align::Center),
+                    egui::style::ScrollAnimation::none(),
+                );
             }
 
             // Auto-scroll while drag-selecting past the viewport, as
@@ -680,7 +703,7 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
             // speed grows with the overshoot (slow near the edge for
             // precise stops, fast further out), and `stable_dt`
             // keeps it frame-rate independent.
-            let editor_row = response.inner;
+            let editor_row = &text_output.response;
             if editor_row.dragged() {
                 if let Some(p) = ui.input(|i| i.pointer.hover_pos()) {
                     let vp = ui.clip_rect();
@@ -721,15 +744,75 @@ fn editor(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: Option<Jump>) {
                     }
                 }
             }
-            editor_row
-        })
-        .inner;
+            text_output
+        });
+    // The scroll state lives in egui's memory under this id; tests
+    // read it back from there.
+    #[cfg(test)]
+    {
+        app.ui.editor_scroll_id = Some(scroll.id);
+    }
+    let output = scroll.inner;
 
-    let changed = response.changed();
+    let changed = output.response.changed();
     let file = &mut project.files[idx];
     file.text = text;
     if changed {
         file.dirty = true;
+    }
+
+    // Editor-scoped shortcuts: only while the editor itself has
+    // keyboard focus — then egui consumes the keystrokes anyway, so
+    // they cannot leak into the emulated machine (whose keyboard
+    // they would otherwise be: F5 is its K4 key, Ctrl its STOP key).
+    // Find and go-to only touch the project; the rest is queued and
+    // run after this borrow of the project ends.
+    enum EditorAction {
+        Build,
+        Save,
+        Run,
+        RunDirect,
+    }
+    let mut actions = Vec::new();
+    if output.response.has_focus() {
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        let ctrl = |key: Key| KeyboardShortcut::new(Modifiers::CTRL, key);
+        let consume =
+            |ui: &mut egui::Ui, s: &KeyboardShortcut| ui.input_mut(|i| i.consume_shortcut(s));
+        if consume(ui, &ctrl(Key::F)) {
+            project.find.open = !project.find.open;
+            if project.find.open {
+                project.find.active = 0;
+                // Reopening re-reveals the active match.
+                project.find.revealed = None;
+                ui.ctx().memory_mut(|m| m.request_focus(find_query_id()));
+            }
+        }
+        if consume(ui, &ctrl(Key::G)) {
+            project.goto_open = true;
+        }
+        if consume(ui, &ctrl(Key::B)) {
+            actions.push(EditorAction::Build);
+        }
+        if consume(ui, &ctrl(Key::S)) {
+            actions.push(EditorAction::Save);
+        }
+        if consume(ui, &KeyboardShortcut::new(Modifiers::NONE, Key::F5)) {
+            actions.push(EditorAction::Run);
+        }
+        if consume(ui, &KeyboardShortcut::new(Modifiers::CTRL, Key::F5)) {
+            actions.push(EditorAction::RunDirect);
+        }
+    }
+    for action in actions {
+        match action {
+            EditorAction::Build => {
+                app.build_project();
+            }
+            EditorAction::Save => app.save_project_file(),
+            EditorAction::Run => app.run_project(),
+            EditorAction::RunDirect => app.run_project_direct(),
+        }
     }
 }
 
@@ -796,6 +879,11 @@ fn find_bar(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: &mut Option<J
                 .hint_text("Find")
                 .desired_width(110.0),
         );
+        // A new query re-reveals its first match even when it
+        // happens to sit at the same byte as the old one's.
+        if query_edit.changed() {
+            project.find.revealed = None;
+        }
         // Enter cycles forward, Shift+Enter back, Escape closes.
         if query_edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
             if ui.input(|i| i.modifiers.shift) {
@@ -852,6 +940,10 @@ fn find_bar(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: &mut Option<J
                 let end = (byte + query.len()).min(file.text.len());
                 file.text.replace_range(byte..end, &project.find.replace);
                 file.dirty = true;
+                // The buffer just shifted under the matches; the new
+                // active match must be re-revealed even if it lands
+                // on the same byte.
+                project.find.revealed = None;
             }
         }
         if ui.button("Replace all").clicked() && !query.is_empty() {
@@ -860,6 +952,7 @@ fn find_bar(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: &mut Option<J
             let replaced = file.text.replace(&query, &replace_with);
             file.text = replaced;
             file.dirty = true;
+            project.find.revealed = None;
         }
         if ui
             .button(egui::RichText::new(icon::X).size(12.0))
@@ -870,23 +963,31 @@ fn find_bar(ui: &mut egui::Ui, app: &mut App, theme: &Theme, jump: &mut Option<J
         }
     });
 
-    // The active match becomes this frame's jump so the editor
-    // scrolls to it and puts the cursor there.
+    // A *changed* active match becomes this frame's jump so the
+    // editor scrolls to it and puts the cursor there. Not every
+    // frame: re-jumping the same match would pin the view to it and
+    // fight the user's own scrolling (the match is still backlit, so
+    // it stays findable on screen). Keyed on (file, byte) so that
+    // switching buffers or editing the query re-reveals too.
     if let Some(byte) = active {
-        let file = &project.files[idx];
-        if byte <= text_len {
-            let before = &file.text[..byte];
-            let line = before.matches('\n').count() + 1;
-            let col = before
-                .rsplit('\n')
-                .next()
-                .map(|l| l.chars().count() + 1)
-                .unwrap_or(1);
-            *jump = Some(Jump {
-                file: file.path.clone(),
-                line,
-                col,
-            });
+        let path = project.files[idx].path.clone();
+        if project.find.revealed != Some((path.clone(), byte)) {
+            project.find.revealed = Some((path.clone(), byte));
+            let file = &project.files[idx];
+            if byte <= text_len {
+                let before = &file.text[..byte];
+                let line = before.matches('\n').count() + 1;
+                let col = before
+                    .rsplit('\n')
+                    .next()
+                    .map(|l| l.chars().count() + 1)
+                    .unwrap_or(1);
+                *jump = Some(Jump {
+                    file: file.path.clone(),
+                    line,
+                    col,
+                });
+            }
         }
     }
 }

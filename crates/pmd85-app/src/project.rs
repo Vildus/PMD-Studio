@@ -105,6 +105,11 @@ pub struct FindState {
     /// Byte offset of the active match in the active buffer (for
     /// the highlighter's backlit runs).
     pub active_match: Option<usize>,
+    /// The file and byte offset of the match the editor was last
+    /// scrolled to. A jump is only produced when the active match
+    /// differs from this: re-jumping every frame would pin the view
+    /// to the match and fight the user's own scrolling.
+    pub revealed: Option<(String, usize)>,
 }
 
 /// One assembly of the project.

@@ -52,6 +52,11 @@ pub struct UiState {
     /// A jump the editor applies on its next draw (set by the
     /// Problems tab, among others).
     pub project_jump: Option<crate::ui::project::Jump>,
+    /// The active file's editor scroll area id from the last drawn
+    /// frame — a handle for tests inspecting the editor's scroll
+    /// position through egui's memory.
+    #[cfg(test)]
+    pub editor_scroll_id: Option<egui::Id>,
 }
 
 impl Default for UiState {
@@ -68,6 +73,8 @@ impl Default for UiState {
             mouse_rst: false,
             mouse_joystick: None,
             project_jump: None,
+            #[cfg(test)]
+            editor_scroll_id: None,
         }
     }
 }
@@ -907,12 +914,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The IDE has no keyboard shortcuts: with the Project tab
-    /// visible, F5 / Ctrl+S / Ctrl+B run, save and build nothing —
-    /// the host keyboard belongs to the emulated machine (F5 is its
-    /// K4 key, Ctrl its STOP key).
+    /// Keyboard shortcuts are editor-scoped: with the Project tab
+    /// visible but the editor not focused, F5 / Ctrl+S / Ctrl+B run,
+    /// save and build nothing — the host keyboard belongs to the
+    /// emulated machine (F5 is its K4 key, Ctrl its STOP key). The
+    /// focused-editor cases live in
+    /// [`editor_shortcuts_need_editor_focus`].
     #[test]
-    fn no_host_shortcuts_in_the_project_tab() {
+    fn no_host_shortcuts_without_editor_focus() {
         let mut app = test_app();
         let mut project = test_project("no-shortcuts");
         project.files[0].text = "MVI A,1\nHLT\n".to_string();
@@ -2387,5 +2396,287 @@ mod tests {
             "audio stalled after a state restore: {before} -> {after} samples"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A raw-input frame against a window of the given size, running
+    /// the emulation like a real frame.
+    fn frame(app: &mut App, ctx: &egui::Context, size: egui::Vec2, events: Vec<egui::Event>) {
+        app.advance();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| draw(app, ui));
+        out.drop_without_applying_deltas();
+    }
+
+    /// A pressed-key event with the given modifiers.
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// The editor's scroll offset, read back from egui's memory
+    /// through the id the editor recorded while drawing.
+    fn editor_scroll_y(app: &App, ctx: &egui::Context) -> f32 {
+        let id = app.ui.editor_scroll_id.expect("the editor was drawn");
+        egui::containers::scroll_area::State::load(ctx, id)
+            .expect("the editor has scroll state")
+            .offset
+            .y
+    }
+
+    /// A pending jump (a Problems click, go-to, find) must scroll the
+    /// editor to the target line: the scrolled-to rect is the row the
+    /// galley actually laid out. The regression: the old row-height
+    /// guess translated the whole editor rect (all N rows tall) and
+    /// centered that, so the view landed half a file below the target
+    /// — clamped to the bottom for most jumps.
+    #[test]
+    fn editor_jump_scrolls_to_the_jumped_line() {
+        let mut app = test_app();
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        let mut p = test_project("jump");
+        let main = p.files.iter().position(|f| f.path == "main.asm").unwrap();
+        // 400 short lines, targets well away from both clamps.
+        p.files[main].text = "NOP\n".repeat(400);
+        app.project = Some(p);
+        let ctx = app.ctx.clone();
+
+        let jump_to = |app: &mut App, line: usize| {
+            app.ui.project_jump = Some(crate::ui::project::Jump {
+                file: "main.asm".into(),
+                line,
+                col: 1,
+            });
+            for _ in 0..4 {
+                frame(app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+            }
+        };
+
+        // Note the row spacing is measured from the offsets
+        // themselves, not from `Fonts::row_height`: the galley places
+        // rows on rounded positions (17.0 px here vs 16.875), exactly
+        // the kind of subtlety the old row-height guess tripped over.
+        jump_to(&mut app, 100);
+        let o100 = editor_scroll_y(&app, &ctx);
+        jump_to(&mut app, 190);
+        let o190 = editor_scroll_y(&app, &ctx);
+        jump_to(&mut app, 250);
+        let o250 = editor_scroll_y(&app, &ctx);
+
+        let row = (o250 - o100) / 150.0;
+        assert!(
+            (o190 - o100 - 90.0 * row).abs() < 1.0,
+            "rows are revealed evenly: line 190 landed {} off the \
+             linearity predicted from lines 100 and 250",
+            o190 - o100 - 90.0 * row
+        );
+        assert!(
+            o100 > 0.0,
+            "the view scrolled down to the target at all (offset {o100})"
+        );
+        assert!(
+            o250 < 250.0 * row,
+            "the target line was scrolled past: {} > {}",
+            o250,
+            250.0 * row
+        );
+
+        // Line 1 sits at (or above) the top: the view must end up at
+        // the very top, not half a file down.
+        jump_to(&mut app, 1);
+        let o1 = editor_scroll_y(&app, &ctx);
+        assert!(
+            o1.abs() < 0.5,
+            "jumping to line 1 leaves the view at the top: {o1}"
+        );
+    }
+
+    /// Scrolling away from the found line must stick: the editor
+    /// jumps to the active match only when it *changes* (cycling,
+    /// editing the query, replacing), not every frame — re-jumping
+    /// every frame pinned the view to the match like a magnet.
+    #[test]
+    fn find_bar_reveals_only_a_changed_match() {
+        let mut app = test_app();
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        let mut p = test_project("magnet");
+        let main = p.files.iter().position(|f| f.path == "main.asm").unwrap();
+        // Two matches, far apart: lines 120 and 320 of 400.
+        p.files[main].text = (1..=400)
+            .map(|i| {
+                if i == 120 || i == 320 {
+                    "MVI A,1\n"
+                } else {
+                    "NOP\n"
+                }
+            })
+            .collect();
+        p.find.open = true;
+        p.find.query = "MVI".into();
+        let second_byte = p.files[main]
+            .text
+            .match_indices("MVI")
+            .nth(1)
+            .map(|(b, _)| b)
+            .unwrap();
+        app.project = Some(p);
+        let ctx = app.ctx.clone();
+
+        // The find bar reveals its first match once.
+        for _ in 0..4 {
+            frame(&mut app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+        }
+        let first = editor_scroll_y(&app, &ctx);
+        assert!(
+            first > 100.0 * 16.0,
+            "the first match (line 120) was revealed: {first}"
+        );
+
+        // Scroll away by hand: the view must stay where the user put
+        // it while the active match is unchanged.
+        let id = app.ui.editor_scroll_id.unwrap();
+        let mut state = egui::containers::scroll_area::State::load(&ctx, id).unwrap();
+        state.offset = egui::Vec2::ZERO;
+        state.store(&ctx, id);
+        for _ in 0..3 {
+            frame(&mut app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+        }
+        let stayed = editor_scroll_y(&app, &ctx);
+        assert!(
+            stayed < 1.0,
+            "the view snapped back to the match like a magnet: {stayed}"
+        );
+
+        // Cycling to the next match jumps again — once.
+        app.project.as_mut().unwrap().find.active = 1;
+        for _ in 0..4 {
+            frame(&mut app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+        }
+        let second = editor_scroll_y(&app, &ctx);
+
+        // Calibrate the row spacing with plain jumps: the galley
+        // rounds row positions, so `Fonts::row_height` is close but
+        // not exact (17.0 vs 16.875 here).
+        let jump = |app: &mut App, line: usize| {
+            app.ui.project_jump = Some(crate::ui::project::Jump {
+                file: "main.asm".into(),
+                line,
+                col: 1,
+            });
+            frame(app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+            frame(app, &ctx, egui::vec2(800.0, 600.0), Vec::new());
+        };
+        jump(&mut app, 100);
+        let o100 = editor_scroll_y(&app, &ctx);
+        jump(&mut app, 250);
+        let o250 = editor_scroll_y(&app, &ctx);
+        let row = (o250 - o100) / 150.0;
+
+        assert!(
+            (second - first - 200.0 * row).abs() < 2.0,
+            "the second match (line 320, 200 rows down) was revealed: \
+             first {first}, second {second}, expected {:#?}",
+            first + 200.0 * row
+        );
+        // And the reveal is remembered, not re-issued.
+        assert_eq!(
+            app.project.as_ref().unwrap().find.revealed,
+            Some(("main.asm".into(), second_byte)),
+            "the second match's byte offset is what was revealed"
+        );
+    }
+
+    /// The editor's keyboard shortcuts (Ctrl+F/G/B/S, F5, Ctrl+F5)
+    /// fire only while the editor itself has keyboard focus — then
+    /// egui consumes the keys, so they cannot leak into the emulated
+    /// machine (whose keyboard they would otherwise be: F5 is its K4
+    /// key). Without focus nothing fires: the host keyboard stays
+    /// the machine's and the IDE is driven by its buttons.
+    #[test]
+    fn editor_shortcuts_need_editor_focus() {
+        let mut app = test_app();
+        crate::ui::dock::show_tab(&mut app.ui.dock, crate::ui::dock::Tab::Project);
+        app.project = Some(test_project("shortcuts"));
+        app.set_running(false);
+        let ctx = app.ctx.clone();
+        let editor_id = egui::Id::new(("project-editor", "main.asm"));
+
+        // Without focus the shortcuts must not fire.
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::F5, egui::Modifiers::NONE)],
+        );
+        assert!(!app.running, "F5 without editor focus must not run");
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::F, egui::Modifiers::CTRL)],
+        );
+        assert!(
+            !app.project.as_ref().unwrap().find.open,
+            "Ctrl+F without editor focus must not open the find bar"
+        );
+
+        // With focus they do.
+        ctx.memory_mut(|m| m.request_focus(editor_id));
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::F, egui::Modifiers::CTRL)],
+        );
+        assert!(
+            app.project.as_ref().unwrap().find.open,
+            "Ctrl+F opens the find bar"
+        );
+        app.project.as_mut().unwrap().find.open = false;
+
+        ctx.memory_mut(|m| m.request_focus(editor_id));
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::G, egui::Modifiers::CTRL)],
+        );
+        assert!(
+            app.project.as_ref().unwrap().goto_open,
+            "Ctrl+G opens go-to"
+        );
+        app.project.as_mut().unwrap().goto_open = false;
+
+        ctx.memory_mut(|m| m.request_focus(editor_id));
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::F5, egui::Modifiers::NONE)],
+        );
+        assert!(app.running, "F5 runs the project");
+        assert!(app.auto_type.is_some(), "F5 loads through the monitor");
+
+        ctx.memory_mut(|m| m.request_focus(editor_id));
+        frame(
+            &mut app,
+            &ctx,
+            egui::vec2(800.0, 600.0),
+            vec![key(egui::Key::F5, egui::Modifiers::CTRL)],
+        );
+        assert!(app.running, "Ctrl+F5 runs the project directly");
+        assert!(app.auto_type.is_none(), "no monitor typing in a direct run");
+        assert_eq!(
+            app.machine.cpu.pc, 0x1000,
+            "the CPU was started at the template's entry point"
+        );
     }
 }
