@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=PMD 85 — Tesla
+Name=PMD Studio
 GenericName=PMD 85 emulator
-Comment=Emulator of the Tesla PMD 85 home computer
+Comment=Emulator and assembler IDE for the Tesla PMD 85 home computer
 # The @BIN@ placeholder is replaced with the built binary's path by
 # dist/install-user.sh.
 Exec=@BIN@ %f

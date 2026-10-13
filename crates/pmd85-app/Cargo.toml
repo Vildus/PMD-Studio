@@ -1,6 +1,6 @@
 [package]
 name = "pmd85-app"
-description = "Desktop application for the PMD 85 emulator (wgpu renderer)"
+description = "PMD Studio — emulator and assembler IDE for the Tesla PMD 85 (wgpu renderer)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

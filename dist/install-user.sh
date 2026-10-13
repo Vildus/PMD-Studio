@@ -1,5 +1,6 @@
 #!/bin/sh
-# User-level desktop integration for the PMD 85 emulator.
+# User-level desktop integration for PMD Studio (the PMD 85
+# emulator).
 #
 # Installs the application entry and the icon into the user's data
 # dirs (~/.local/share), so Wayland/X11 taskbars, dashes and app

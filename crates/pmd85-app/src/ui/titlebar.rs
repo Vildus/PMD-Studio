@@ -58,7 +58,7 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                     ui.add_space(4.0);
                 }
                 ui.label(
-                    egui::RichText::new("PMD 85 \u{2014} Tesla")
+                    egui::RichText::new("PMD Studio")
                         .size(12.0)
                         .strong()
                         .color(c(&theme.text)),

@@ -1,4 +1,5 @@
-//! Desktop application for the Tesla PMD 85 emulator.
+//! Desktop application PMD Studio: the PMD 85 emulator and
+//! assembler IDE.
 //!
 //! Owns a winit window painted by egui (via `egui-wgpu`); the emulated
 //! screen is an egui texture updated from VRAM each frame. Emulation
@@ -64,7 +65,7 @@ impl ApplicationHandler for Application {
             return;
         }
         let attrs = Window::default_attributes()
-            .with_title("PMD 85 \u{2014} Tesla")
+            .with_title("PMD Studio")
             // The size the last run exited with (see `layout.json`);
             // points, so it survives a different display scale.
             .with_inner_size(winit::dpi::LogicalSize::new(
