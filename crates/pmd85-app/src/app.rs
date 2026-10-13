@@ -801,11 +801,43 @@ impl App {
     /// Rebuild the machine from a cold-start configuration. Never
     /// panics: load failures produce a notification and a blank ROM.
     pub fn rebuild_machine(&mut self, config: &MachineConfig) {
-        let (monitor, monitor_missing) = self.load_rom(
+        let (mut monitor, monitor_missing) = self.load_rom(
             &config.monitor,
             config.model.default_monitor(),
             config.model,
         );
+        // The core's memory builder asserts the model's exact monitor
+        // size, and the catalog offers every `.rom` in the directory
+        // (1 KiB test ROMs, 16 KiB terminal ROMs, ...), so a size
+        // mismatch must be caught here: like a missing file, it
+        // boots a blank monitor of the right size instead of
+        // panicking.
+        let expected = config.model.monitor_size();
+        if monitor.len() != expected {
+            if !monitor_missing {
+                let name = config
+                    .monitor
+                    .clone()
+                    .unwrap_or_else(|| config.model.default_monitor().to_string());
+                log::warn!(
+                    "monitor ROM {name:?} is {} bytes, not the {expected} the {} expects",
+                    monitor.len(),
+                    config.model.name()
+                );
+                self.notify(format!(
+                    "Monitor ROM {name} is {} bytes - the PMD {} needs {expected} - \
+                     machine will not boot",
+                    monitor.len(),
+                    config.model.name(),
+                ));
+                monitor = vec![0u8; expected];
+            } else {
+                // A missing file whose name does not end in .rom comes
+                // back empty (load_rom only pre-sizes .rom names);
+                // pad it to keep the size invariant.
+                monitor.resize(expected, 0);
+            }
+        }
         let module = config
             .rom_module
             .as_ref()

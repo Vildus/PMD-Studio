@@ -1282,6 +1282,27 @@ mod tests {
         app.advance();
     }
 
+    /// A monitor ROM with the wrong size for the model must not
+    /// panic the core's size assert (the catalog lists every `.rom`
+    /// in the directory — 1 KiB test ROMs, 16 KiB terminal ROMs and
+    /// the like next to the 4/8 KiB monitors).
+    #[test]
+    fn rebuild_with_wrong_size_rom_is_not_fatal() {
+        let mut app = test_app();
+        let cfg = crate::app::MachineConfig {
+            model: Model::Pmd853,
+            // 1 KiB RAM-test ROM; the 85-3 expects an 8 KiB monitor.
+            monitor: Some("colorpal-mon2.rom".into()),
+            rom_module: None,
+        };
+        app.apply_config(cfg);
+        assert!(!app.notifications().is_empty());
+        // A blank monitor of the right size, and it runs.
+        assert_eq!(app.monitor_rom.len(), Model::Pmd853.monitor_size());
+        assert!(app.monitor_rom.iter().all(|&b| b == 0));
+        app.advance();
+    }
+
     #[test]
     fn multiplier_clamps_to_the_planned_range() {
         let mut app = test_app();

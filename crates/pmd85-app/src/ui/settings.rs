@@ -71,7 +71,30 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                         );
                         for entry in app.catalog.monitors() {
                             let name = format!("{} ({})", entry.file_name, entry.size_label());
-                            ui.selectable_value(&mut monitor_label, name.clone(), name);
+                            // A monitor must be the model's exact ROM
+                            // size; the core would reject anything
+                            // else. Wrong-size files stay listed but
+                            // cannot be picked.
+                            let fits = entry.size as usize == cfg.model.monitor_size();
+                            let note = if fits {
+                                entry.description.clone()
+                            } else {
+                                format!(
+                                    "{} bytes - the PMD {} needs a {} byte monitor",
+                                    entry.size,
+                                    cfg.model.name(),
+                                    cfg.model.monitor_size()
+                                )
+                            };
+                            let selected = monitor_label == name;
+                            let response = ui
+                                .add_enabled_ui(fits, |ui| {
+                                    ui.selectable_label(selected, name.clone())
+                                })
+                                .inner;
+                            if response.on_hover_text(note).clicked() {
+                                monitor_label = name;
+                            }
                         }
                     });
                 cfg.monitor = if monitor_label == default_monitor_label(cfg.model) {
