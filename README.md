@@ -4,9 +4,6 @@ An emulator and assembler IDE for the **Tesla PMD 85** family of 8-bit
 Czechoslovak home computers (PMD 85-1, 85-2, 85-2A, 85-3), written
 in Rust.
 
-<!-- Screenshot: drop a PNG at docs/screenshot.png (something like
-     1280x800, the app showing the emulated screen plus a couple of
-     docked panels, or the assembler IDE). -->
 ![PMD Studio](docs/screenshot.png)
 
 The CPU core is a cycle-counted Intel 8080 validated against the
@@ -115,6 +112,13 @@ highlighting editor, problems panel, authentic and direct run).
 
 Not yet: serial I/O beyond the cassette path (the 8251 serves the
 deck), disk image support.
+
+## License
+
+The code in this repository is licensed under the [MIT license](LICENSE).
+
+The monitor ROM dumps in `Rom/` and the bundled tape images in `Tapes/` are third-party material and are not covered by
+that license.
 
 ## References
 
