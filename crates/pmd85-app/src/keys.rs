@@ -75,8 +75,10 @@ fn keys_for(code: KeyCode) -> &'static [Key] {
         KeyCode::Space => &[Space],
         KeyCode::Enter | KeyCode::NumpadEnter => &[Enter],
         KeyCode::ShiftLeft | KeyCode::ShiftRight => &[Shift],
-        // STOP sits where the host has its Control keys.
-        KeyCode::Escape | KeyCode::ControlLeft | KeyCode::ControlRight => &[Stop],
+        // STOP sits where the host has its Control keys. Escape is a
+        // host key (it leaves fullscreen) and does not reach the
+        // machine.
+        KeyCode::ControlLeft | KeyCode::ControlRight => &[Stop],
 
         // Control cluster: positional neighbors of the cluster grid.
         KeyCode::Backspace => &[Backspace], // left arrow key
@@ -139,7 +141,8 @@ pub fn map(event: &KeyEvent) -> &'static [Key] {
 /// Actions bound to host-key shortcuts: taken while the host-key
 /// modifier (left Alt) is held, during which no keys reach the
 /// machine. The chords live in a namespace the PMD 85 mapping never
-/// touches (every F-key alone maps to a PMD `K` function key).
+/// touches (every F-key alone maps to a PMD `K` function key; plain
+/// Enter types into the machine, Alt+Enter does not).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HostShortcut {
     /// Alt+F5: save to the quick slot, no dialog.
@@ -152,6 +155,8 @@ pub enum HostShortcut {
     DebugStepOver,
     /// Alt+F12: continue after a breakpoint.
     DebugContinue,
+    /// Alt+Enter: toggle fullscreen.
+    ToggleFullscreen,
 }
 
 /// The host-key shortcut bound to a physical key (checked only while
@@ -163,6 +168,7 @@ pub fn host_shortcut(code: KeyCode) -> Option<HostShortcut> {
         KeyCode::F10 => Some(HostShortcut::DebugStep),
         KeyCode::F11 => Some(HostShortcut::DebugStepOver),
         KeyCode::F12 => Some(HostShortcut::DebugContinue),
+        KeyCode::Enter | KeyCode::NumpadEnter => Some(HostShortcut::ToggleFullscreen),
         _ => None,
     }
 }
@@ -251,8 +257,25 @@ mod tests {
             host_shortcut(KeyCode::F12),
             Some(HostShortcut::DebugContinue)
         );
+        assert_eq!(
+            host_shortcut(KeyCode::Enter),
+            Some(HostShortcut::ToggleFullscreen)
+        );
+        assert_eq!(
+            host_shortcut(KeyCode::NumpadEnter),
+            Some(HostShortcut::ToggleFullscreen)
+        );
         assert_eq!(host_shortcut(KeyCode::F4), None);
         assert_eq!(host_shortcut(KeyCode::KeyS), None);
+    }
+
+    #[test]
+    fn escape_is_a_host_key_not_stop() {
+        // Only the host Control keys press STOP; Escape is reserved
+        // for the UI (it leaves fullscreen) and maps to nothing.
+        assert_eq!(keys_for(KeyCode::ControlLeft), &[Key::Stop]);
+        assert_eq!(keys_for(KeyCode::ControlRight), &[Key::Stop]);
+        assert!(keys_for(KeyCode::Escape).is_empty());
     }
 
     #[test]

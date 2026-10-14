@@ -25,8 +25,9 @@ direct RAM-inject run mode, and ROM-module targets.
 - **Four models** — 85-1, 85-2, 85-2A, 85-3 — each booting its real
   monitor ROM to a working command line
 - **Screen the way you like it** — 85-3 RGB colors, a monochrome
-  profile with any phosphor color, the ColorAce mod's 7 colors, and
-  an optional CRT effect (scanlines, glow, vignette)
+  profile with any phosphor color, the ColorAce mod's 7 colors, an
+  optional CRT effect (scanlines, glow, vignette), and fullscreen
+  (Alt+Enter)
 - **Authentic tape** — `.ptp` cassette images, a full tape editor,
   real modulated playback *or* flash-loading, saves (`MGSV`)
   harvested back into the tape, the archive's example tapes one

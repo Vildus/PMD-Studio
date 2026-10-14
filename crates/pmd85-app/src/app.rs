@@ -567,6 +567,9 @@ pub(crate) enum WindowRequest {
     /// setting; the system frame is shown exactly when the custom
     /// titlebar is not).
     Decorate(bool),
+    /// Enter borderless fullscreen, or leave it for the floating
+    /// window.
+    Fullscreen(bool),
     /// Quit the app, like the system close button (saves the session).
     Close,
 }
@@ -685,6 +688,11 @@ pub struct App {
     /// before each frame; drives the titlebar and hides the resize
     /// border).
     pub(crate) window_maximized: bool,
+    /// Borderless fullscreen: the whole window is the emulated
+    /// screen. Ephemeral (never persisted); the winit loop mirrors
+    /// the real window state into it every frame, so WM-initiated
+    /// exits stay in sync.
+    pub(crate) fullscreen: bool,
     /// Inner size of the window in points, tracked while the window
     /// is not maximized — what the next start restores (the maximized
     /// size is not a useful restore size).
@@ -801,6 +809,7 @@ impl App {
             crt_buf: Vec::new(),
             icon: None,
             window_maximized: false,
+            fullscreen: false,
             window_size: egui::vec2(980.0, 760.0),
             window_start_maximized: false,
             window_requests: Vec::new(),
@@ -2416,6 +2425,25 @@ impl App {
     /// after each frame).
     pub(crate) fn take_window_requests(&mut self) -> Vec<WindowRequest> {
         std::mem::take(&mut self.window_requests)
+    }
+
+    /// Enter or leave borderless fullscreen. The flag flips right
+    /// away (so the same frame already draws the bare screen); the
+    /// winit loop applies the actual window change and keeps the
+    /// flag mirrored from the window state afterwards.
+    pub(crate) fn set_fullscreen(&mut self, on: bool) {
+        if on && !self.fullscreen {
+            self.notify("Fullscreen — Alt+Enter or Esc leaves");
+        }
+        self.fullscreen = on;
+        self.request_window(WindowRequest::Fullscreen(on));
+    }
+
+    /// Toggle borderless fullscreen (Alt+Enter, double-click on the
+    /// screen, or the bezel's hover button).
+    pub(crate) fn toggle_fullscreen(&mut self) {
+        let on = !self.fullscreen;
+        self.set_fullscreen(on);
     }
 
     /// Point persisted settings at `dir` (tests write to a scratch

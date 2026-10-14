@@ -75,6 +75,12 @@ glow and vignette simulation (each adjustable; off by default). It
 is done on the CPU over the decoded framebuffer and fades its
 scanlines out below 2× zoom, where they would alias.
 
+**Fullscreen** (Alt+Enter, a double-click on the screen, or the
+button revealed by the pointer near the screen's top-right corner)
+hides the interface and fills the monitor with the screen at the
+largest integer scale; Esc or the same gestures leave it. Esc no
+longer presses the machine's STOP key — both host Control keys do.
+
 ## The interface
 
 A transport bar (run/pause/stop/reset, save/load state, speed and
@@ -150,12 +156,14 @@ Physical, PMD 85 is QWERTZ — host Y/Z map to PMD Z/Y:
 
 - letters, digits, `Space`, `Enter`, `Tab`, `Backspace`, `Delete`,
   `Insert`, arrows, `Home`/`End` map directly
-- `Shift` → SHIFT, `Esc`/`Ctrl` → STOP
+- `Shift` → SHIFT, `Ctrl` → STOP (`Esc` is a host key: it leaves
+  fullscreen and never reaches the machine)
 - `F1`..`F12` → function keys `K0`..`K11`
 
 While Left `Alt` is held the keyboard is in host-shortcut mode and
 no keys reach the machine: `Alt+F5`/`Alt+F9` quick-save/load state,
-`Alt+F10` step, `Alt+F11` step over, `Alt+F12` continue. The Keyboard
+`Alt+F10` step, `Alt+F11` step over, `Alt+F12` continue,
+`Alt+Enter` fullscreen. The Keyboard
 panel is a reference view of the PMD layout: caps light up while the
 corresponding emulated key is held, and they are clickable (pointer
 held on a cap presses the key, sliding across caps slides the

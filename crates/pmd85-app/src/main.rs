@@ -186,6 +186,9 @@ impl ApplicationHandler for Application {
                                     Some(keys::HostShortcut::DebugContinue) => {
                                         self.app.debug_continue()
                                     }
+                                    Some(keys::HostShortcut::ToggleFullscreen) => {
+                                        self.app.toggle_fullscreen()
+                                    }
                                     None => {}
                                 }
                             }
@@ -249,9 +252,10 @@ impl Application {
 
         // 2. egui pass: input, UI, platform output.
         self.app.window_maximized = w.window.is_maximized();
+        self.app.fullscreen = w.window.fullscreen().is_some();
         // Track the floating size for the next start — the maximized
-        // size is not a useful restore size.
-        if !self.app.window_maximized {
+        // and fullscreen sizes are not useful restore sizes.
+        if !self.app.window_maximized && !self.app.fullscreen {
             let scale = w.window.scale_factor();
             let size = w.window.inner_size().to_logical::<f32>(scale);
             self.app.window_size = egui::vec2(size.width, size.height);
@@ -303,6 +307,11 @@ impl Application {
                 WindowRequest::Minimize => w.window.set_minimized(true),
                 WindowRequest::ToggleMaximize => w.window.set_maximized(!w.window.is_maximized()),
                 WindowRequest::Decorate(on) => w.window.set_decorations(on),
+                WindowRequest::Fullscreen(on) => w.window.set_fullscreen(if on {
+                    Some(winit::window::Fullscreen::Borderless(None))
+                } else {
+                    None
+                }),
                 // The unsaved-changes guard may hold the exit back.
                 WindowRequest::Close => {
                     if self.app.request_exit() {

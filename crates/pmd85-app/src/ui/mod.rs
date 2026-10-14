@@ -92,6 +92,20 @@ impl Default for UiState {
 /// Draw the whole UI for one frame (between `begin_pass`/`end_pass`).
 /// `ui` is the root Ui covering the window.
 pub fn draw(app: &mut App, ui: &mut egui::Ui) {
+    // Fullscreen: nothing but the emulated screen. Floating layers
+    // that may outlive the chrome stay (notifications, the unsaved-
+    // changes guard). Esc leaves.
+    if app.fullscreen {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            app.set_fullscreen(false);
+        }
+        screen::draw(ui, app);
+        let ctx = ui.ctx().clone();
+        draw_notifications(&ctx, app);
+        project::close_guard_modal(&ctx, app);
+        return;
+    }
+
     // The custom titlebar replaces the system window frame when the
     // setting is on; the system frame is drawn exactly when it is
     // not (set at window creation, switched live by the setting).
@@ -202,6 +216,12 @@ mod tests {
             ("slow", Box::new(|a| a.set_multiplier(0.25))),
             ("fast", Box::new(|a| a.set_multiplier(10.0))),
             ("settings-open", Box::new(|a| a.ui.settings_open = true)),
+            (
+                "fullscreen",
+                Box::new(|a| {
+                    a.fullscreen = true;
+                }),
+            ),
             (
                 "crt-on",
                 Box::new(|a| {
@@ -2439,6 +2459,327 @@ mod tests {
         assert!(
             w > 500.0,
             "the screen fills the window at 1200x900, got {w:.0}x{h:.0}"
+        );
+    }
+
+    /// Fullscreen: entering it (Alt+Enter, the bezel button, or a
+    /// double-click) hides the chrome, the screen grows to the whole
+    /// window, and Esc — or toggling again — leaves. Esc does nothing
+    /// while windowed.
+    #[test]
+    fn fullscreen_hides_chrome_and_esc_leaves() {
+        let mut app = test_app();
+        app.advance(); // the screen texture exists
+        let ctx = app.ctx.clone();
+        let tex_id = app.screen.as_ref().unwrap().id();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+
+        // The drawn screen (the only textured rect) and whether a
+        // bar of chrome spans the top of the window.
+        let inspect = |out: &egui::FullOutput,
+                        window: egui::Rect|
+         -> (Option<egui::Rect>, bool) {
+            let mut screen = None;
+            let mut chrome = false;
+            for clipped in &out.shapes {
+                let egui::Shape::Rect(r) = &clipped.shape else {
+                    continue;
+                };
+                if r.brush
+                    .as_ref()
+                    .is_some_and(|b| b.fill_texture_id == tex_id)
+                {
+                    screen = Some(r.rect);
+                } else if r.rect.width() >= window.width() - 12.0
+                    && r.rect.height() < 100.0
+                    && r.rect.top() < 50.0
+                {
+                    chrome = true;
+                }
+            }
+            (screen, chrome)
+        };
+        let window = raw.screen_rect.unwrap();
+
+        // Windowed: chrome above a smaller screen.
+        let out = ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui));
+        let (windowed_screen, chrome) = inspect(&out, window);
+        out.drop_without_applying_deltas();
+        assert!(chrome, "the transport bar is there");
+        let windowed_screen = windowed_screen.expect("the screen is drawn");
+
+        // Esc while windowed: no fullscreen request.
+        let out = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: Some(egui::Key::Escape),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                ..raw.clone()
+            },
+            |ui| draw(&mut app, ui),
+        );
+        out.drop_without_applying_deltas();
+        assert!(!app.fullscreen);
+        assert!(app.take_window_requests().is_empty());
+
+        // Enter fullscreen: the flag flips, the window change is
+        // requested, and the screen fills more of the window.
+        app.toggle_fullscreen();
+        assert!(app.fullscreen);
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(true)]
+        );
+        let out = ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui));
+        let (fullscreen_screen, chrome) = inspect(&out, window);
+        out.drop_without_applying_deltas();
+        assert!(!chrome, "no titlebar/transport in fullscreen");
+        let fullscreen_screen = fullscreen_screen.expect("the screen is drawn");
+        assert!(
+            fullscreen_screen.width() > windowed_screen.width() + 100.0,
+            "fullscreen grows the screen: {fullscreen_screen:?} vs {windowed_screen:?}"
+        );
+
+        // Esc leaves again.
+        let out = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Escape,
+                    physical_key: Some(egui::Key::Escape),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Default::default(),
+                }],
+                ..raw.clone()
+            },
+            |ui| draw(&mut app, ui),
+        );
+        out.drop_without_applying_deltas();
+        assert!(!app.fullscreen);
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(false)]
+        );
+    }
+
+    /// The hover-revealed button in the screen's top-right corner
+    /// toggles fullscreen (and back — it stays reachable over the
+    /// fullscreen screen).
+    #[test]
+    fn screen_corner_button_toggles_fullscreen() {
+        let mut app = test_app();
+        app.advance();
+        let ctx = app.ctx.clone();
+        let tex_id = app.screen.as_ref().unwrap().id();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let frame = |events: Vec<egui::Event>, app: &mut App| {
+            ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..raw.clone()
+                },
+                |ui| draw(app, ui),
+            )
+            .drop_without_applying_deltas()
+        };
+        // The button sits 12 points in from the screen's right edge,
+        // 10 down.
+        let button_center = |app: &mut App| {
+            let screen = {
+                let out = ctx.run_ui(raw.clone(), |ui| draw(app, ui));
+                let screen = out
+                    .shapes
+                    .iter()
+                    .find_map(|c| match &c.shape {
+                        egui::Shape::Rect(r) => r
+                            .brush
+                            .as_ref()
+                            .is_some_and(|b| b.fill_texture_id == tex_id)
+                            .then_some(r.rect),
+                        _ => None,
+                    })
+                    .expect("the screen is drawn");
+                out.drop_without_applying_deltas();
+                screen
+            };
+            screen.right_top() + egui::vec2(-12.0, 10.0)
+        };
+
+        // Hover (reveals the button), press, release: fullscreen on.
+        let center = button_center(&mut app);
+        frame(vec![egui::Event::PointerMoved(center)], &mut app);
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        );
+        assert!(app.fullscreen, "the corner button entered fullscreen");
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(true)]
+        );
+
+        // The button over the (now larger) screen leaves again.
+        let center = button_center(&mut app);
+        frame(vec![egui::Event::PointerMoved(center)], &mut app);
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        );
+        frame(
+            vec![egui::Event::PointerButton {
+                pos: center,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            }],
+            &mut app,
+        );
+        assert!(!app.fullscreen, "the corner button left fullscreen");
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(false)]
+        );
+    }
+
+    /// Double-clicking the screen toggles fullscreen (regression:
+    /// egui's Image is hover-only by default, so the click-sensing
+    /// must be asked for explicitly).
+    #[test]
+    fn screen_double_click_toggles_fullscreen() {
+        let mut app = test_app();
+        app.advance();
+        let ctx = app.ctx.clone();
+        let tex_id = app.screen.as_ref().unwrap().id();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        // Frames advance a clock: egui's click counting is
+        // time-based (a double-click is two releases within 0.3 s at
+        // nearly the same spot, and a quick triple beats it), so a
+        // headless test must feed it believable timestamps.
+        let mut t = 0.0f64;
+        let mut frame = |app: &mut App, events: Vec<egui::Event>| {
+            t += 0.05;
+            ctx.run_ui(
+                egui::RawInput {
+                    time: Some(t),
+                    events,
+                    ..raw.clone()
+                },
+                |ui| draw(app, ui),
+            )
+            .drop_without_applying_deltas()
+        };
+        let click_event = |pos: egui::Pos2, pressed: bool| {
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            }]
+        };
+        // Macros rather than closures: both would need to capture the
+        // single `frame` closure (and its mutable clock) at once.
+        macro_rules! click {
+            ($app:expr, $pos:expr) => {{
+                for pressed in [true, false] {
+                    frame($app, click_event($pos, pressed));
+                }
+            }};
+        }
+        macro_rules! idle {
+            ($app:expr, $frames:expr) => {{
+                for _ in 0..$frames {
+                    frame($app, vec![]);
+                }
+            }};
+        }
+
+        // The screen's center — well away from the corner button —
+        // and a second spot further down.
+        let p1 = {
+            frame(&mut app, vec![]);
+            let out = ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui));
+            let screen = out
+                .shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Rect(r) => r
+                        .brush
+                        .as_ref()
+                        .is_some_and(|b| b.fill_texture_id == tex_id)
+                        .then_some(r.rect),
+                    _ => None,
+                })
+                .expect("the screen is drawn");
+            out.drop_without_applying_deltas();
+            screen.center()
+        };
+        let p2 = p1 + egui::vec2(80.0, 80.0);
+
+        // A single click does nothing.
+        click!(&mut app, p1);
+        assert!(!app.fullscreen, "a single click does not toggle");
+        assert!(app.take_window_requests().is_empty());
+
+        // A double-click (after the click counter has gone cold)
+        // enters fullscreen.
+        idle!(&mut app, 20);
+        click!(&mut app, p2);
+        click!(&mut app, p2);
+        assert!(app.fullscreen, "the double-click entered fullscreen");
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(true)]
+        );
+
+        // And a double-click on the (now larger) screen leaves.
+        idle!(&mut app, 20);
+        click!(&mut app, p1);
+        click!(&mut app, p1);
+        assert!(!app.fullscreen, "the double-click left fullscreen");
+        assert_eq!(
+            app.take_window_requests(),
+            vec![crate::app::WindowRequest::Fullscreen(false)]
         );
     }
 
