@@ -144,7 +144,7 @@ fn main() {
         machine.step_frame();
     }
 
-    let frame = vram::decode(&machine.bus.memory, ColorProfile::Rgb);
+    let frame = vram::decode(&machine.bus.memory, ColorProfile::Rgb, [0x00, 0xD0, 0x00]);
     write_png(&out, vram::WIDTH, vram::HEIGHT, &frame).expect("cannot write PNG");
     eprintln!(
         "wrote {} ({}x{}), model {:?}, cycles={}, pc={:#06x}, halted={}",

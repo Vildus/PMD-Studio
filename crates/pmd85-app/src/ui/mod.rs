@@ -36,6 +36,11 @@ pub struct UiState {
     /// The picked entry of the Tape window's bundled library (the
     /// dropdown's selection; `None` = the first).
     pub tape_library_pick: Option<usize>,
+    /// The integer scale the screen panel last drew at: gates the CRT
+    /// scanline strength (below 2× a dark line would alias). One
+    /// frame stale at most — the panel updates it every frame before
+    /// the next decode.
+    pub screen_scale: f32,
     /// A configuration awaiting the "restart machine?" confirmation.
     pub confirm_reboot: Option<crate::app::MachineConfig>,
     /// The color-customization expander in the settings window.
@@ -70,6 +75,7 @@ impl Default for UiState {
             debug: crate::ui::debug::DebugState::default(),
             tape_import: None,
             tape_library_pick: None,
+            screen_scale: 1.0,
             confirm_reboot: None,
             theme_customize: false,
             theme_draft: None,
@@ -196,6 +202,23 @@ mod tests {
             ("slow", Box::new(|a| a.set_multiplier(0.25))),
             ("fast", Box::new(|a| a.set_multiplier(10.0))),
             ("settings-open", Box::new(|a| a.ui.settings_open = true)),
+            (
+                "crt-on",
+                Box::new(|a| {
+                    // The doubled-height screen texture must draw
+                    // like the plain one.
+                    a.settings.screen.crt.enabled = true;
+                    a.ui.screen_scale = 3.0;
+                }),
+            ),
+            (
+                "colorace-mono",
+                Box::new(|a| {
+                    a.settings.screen.profile = crate::config::ScreenProfile::ColorAce;
+                    a.settings.screen.crt.enabled = true;
+                    a.settings.screen.crt.scanlines = 0.5;
+                }),
+            ),
             (
                 "titlebar-off",
                 Box::new(|a| a.settings.custom_titlebar = false),
@@ -2312,6 +2335,111 @@ mod tests {
             "the screen was not decoded on load"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Screen settings apply live: the next decoded frame uses the
+    /// new profile (ColorAce mixing) and the CRT pass.
+    #[test]
+    fn screen_settings_apply_live() {
+        let mut app = test_app();
+        // Let the monitor settle at its idle command prompt, then
+        // freeze it (a paused advance still decodes the screen, and
+        // nothing rewrites the VRAM under the test).
+        app.run_frames(500);
+        app.set_running(false);
+
+        // A yellow ColorAce pair in the top-left corner: attr 01 in
+        // the even microrow, attr 00 below it, pixels on.
+        app.machine.bus.memory.ram[0xC000] = 0b0100_0001;
+        app.machine.bus.memory.ram[0xC040] = 0b0000_0001;
+
+        app.settings.screen.profile = crate::config::ScreenProfile::ColorAce;
+        app.advance();
+        assert_eq!(&app.decode_buf[0..4], &[0xE0, 0xE0, 0x30, 0xFF]);
+
+        // The mono phosphor color reaches the decode too.
+        app.settings.screen.profile = crate::config::ScreenProfile::Mono;
+        app.settings.screen.phosphor = [0xE8, 0xA0, 0x20];
+        app.advance();
+        // attr 01 = the bright variant of the phosphor.
+        assert_eq!(&app.decode_buf[0..4], &[0xE8, 0xA0, 0x20, 0xFF]);
+
+        // The CRT pass doubles the framebuffer while it is on; the
+        // screen texture follows (it changes size), and returns to
+        // the plain one when off again.
+        app.settings.screen.crt.enabled = true;
+        app.advance();
+        assert_eq!(
+            app.crt_buf.len(),
+            pmd85_core::vram::WIDTH * pmd85_core::vram::HEIGHT * 8
+        );
+        assert_eq!(
+            app.screen.as_ref().unwrap().size(),
+            [pmd85_core::vram::WIDTH, pmd85_core::vram::HEIGHT * 2]
+        );
+        app.settings.screen.crt.enabled = false;
+        app.advance();
+        assert_eq!(
+            app.screen.as_ref().unwrap().size(),
+            [pmd85_core::vram::WIDTH, pmd85_core::vram::HEIGHT]
+        );
+    }
+
+    /// Regression: with the CRT effect on, the screen texture is 2x
+    /// the height (two texels per emulated line). The drawn image
+    /// must stretch into the emulated 288x256 rect, not keep the
+    /// texture's own aspect — egui's default letterboxing squished
+    /// the screen to half width.
+    #[test]
+    fn crt_texture_fills_the_emulated_screen_rect() {
+        let mut app = test_app();
+        app.settings.screen.crt.enabled = true;
+        app.advance(); // create the (doubled) screen texture
+        let ctx = app.ctx.clone();
+        let tex_id = app.screen.as_ref().unwrap().id();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 900.0),
+            )),
+            ..Default::default()
+        };
+        let mut screen_rect: Option<egui::Rect> = None;
+        for _ in 0..10 {
+            let out = ctx.run_ui(raw.clone(), |ui| draw(&mut app, ui));
+            // The screen's mesh: whatever uses the screen texture.
+            // (Panels animate open; the first frames may not paint it.)
+            // The screen is a textured rect (egui 0.36 paints images
+            // as RectShapes with a texture brush).
+            if let Some(rect) = out
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    egui::Shape::Rect(r) => r
+                        .brush
+                        .as_ref()
+                        .filter(|b| b.fill_texture_id == tex_id)
+                        .map(|_| r.rect),
+                    _ => None,
+                })
+                .fold(None::<egui::Rect>, |acc, r| {
+                    Some(acc.map_or(r, |a| a.union(r)))
+                })
+            {
+                screen_rect = Some(rect);
+            }
+            out.drop_without_applying_deltas();
+        }
+        let rect = screen_rect.expect("the screen was not drawn");
+        let (w, h) = (rect.width(), rect.height());
+        assert!(
+            (w / h - 288.0 / 256.0).abs() < 0.05,
+            "the screen keeps the emulated aspect, got {w:.0}x{h:.0}"
+        );
+        assert!(
+            w > 500.0,
+            "the screen fills the window at 1200x900, got {w:.0}x{h:.0}"
+        );
     }
 
     // ----- session (remembered across restarts) ------------------------

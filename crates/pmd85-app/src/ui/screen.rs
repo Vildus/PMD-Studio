@@ -25,6 +25,9 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
             let max_scale_x = (avail.x / WIDTH as f32).floor();
             let max_scale_y = (avail.y / HEIGHT as f32).floor();
             let scale = max_scale_x.min(max_scale_y).max(1.0).floor();
+            // Feedback for the CRT pass (scanline strength); the
+            // next decode reads it.
+            app.ui.screen_scale = scale;
             let image_size = egui::vec2(WIDTH as f32 * scale, HEIGHT as f32 * scale);
 
             // Bezel: slightly larger than the image, drawn as a flat
@@ -59,7 +62,14 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
 
             ui.put(
                 inner_rect,
-                egui::Image::from_texture(&tex).fit_to_exact_size(image_size),
+                // maintain_aspect_ratio(false): the CRT texture is
+                // 2x the height (two texels per emulated line for
+                // scanline resolution), and the rect already has the
+                // emulated screen's aspect — the image must stretch
+                // into it, not letterbox to its own 1:2 aspect.
+                egui::Image::from_texture(&tex)
+                    .fit_to_exact_size(image_size)
+                    .maintain_aspect_ratio(false),
             );
         });
 }

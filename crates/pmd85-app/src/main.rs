@@ -15,6 +15,7 @@ mod args;
 mod audio;
 mod catalog;
 mod config;
+mod crt;
 mod embedded;
 mod gamepad;
 mod icon;

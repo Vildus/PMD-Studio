@@ -3,6 +3,7 @@
 //! "restart machine?" confirmation dialog.
 
 use crate::app::{App, MachineConfig, WindowRequest};
+use crate::config::ScreenProfile;
 use crate::ui::theme::Theme;
 use egui_phosphor::regular as icon;
 use pmd85_core::Model;
@@ -252,6 +253,96 @@ fn draw_settings_window(ctx: &egui::Context, app: &mut App) {
                 // The system frame shows exactly when the custom bar
                 // is off; switch it live, not on restart.
                 app.request_window(WindowRequest::Decorate(!app.settings.custom_titlebar));
+                app.persist();
+            }
+
+            ui.separator();
+
+            // ---- screen ----
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("SCREEN")
+                    .size(11.0)
+                    .strong()
+                    .color(c(&theme.accent)),
+            );
+            ui.add_space(2.0);
+            // Live-applied (the next decoded frame uses it); work
+            // on a copy so the rest of the window can borrow `app`.
+            let mut screen = app.settings.screen.clone();
+            ui.horizontal(|ui| {
+                ui.label("Profile");
+                for (profile, label, hint) in [
+                    (
+                        ScreenProfile::Rgb,
+                        "RGB",
+                        "Four colors as on the 85-3's RGB output:\ngreen, red, blue, violet on black",
+                    ),
+                    (
+                        ScreenProfile::Mono,
+                        "Mono",
+                        "Monochrome TV output, in the phosphor color",
+                    ),
+                    (
+                        ScreenProfile::ColorAce,
+                        "ColorAce",
+                        "The ColorAce hardware mod: attribute colors mix\n\
+                         across microrow pairs, 7 colors on black\n\
+                         (https://pmd85.borik.net/wiki/ColorAce)",
+                    ),
+                ] {
+                    if ui
+                        .selectable_label(screen.profile == profile, label)
+                        .on_hover_text(hint)
+                        .clicked()
+                    {
+                        screen.profile = profile;
+                    }
+                }
+            });
+            ui.add_enabled_ui(screen.profile == ScreenProfile::Mono, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Phosphor");
+                    ui.color_edit_button_srgb(&mut screen.phosphor)
+                        .on_hover_text("The monochrome color");
+                    for (name, rgb) in [
+                        ("green", [0x00, 0xD0, 0x00]),
+                        ("amber", [0xE8, 0xA0, 0x20]),
+                        ("white", [0xE8, 0xE8, 0xE8]),
+                    ] {
+                        if ui
+                            .small_button(name)
+                            .on_hover_text(format!(
+                                "#{:02X}{:02X}{:02X}",
+                                rgb[0], rgb[1], rgb[2]
+                            ))
+                            .clicked()
+                        {
+                            screen.phosphor = rgb;
+                        }
+                    }
+                });
+            });
+            ui.checkbox(&mut screen.crt.enabled, "CRT effect").on_hover_text(
+                "Scanlines, phosphor glow and vignette,\n\
+                 rendered over the emulated screen",
+            );
+            if screen.crt.enabled {
+                ui.add(
+                    egui::Slider::new(&mut screen.crt.scanlines, 0.0..=1.0)
+                        .text("Scanlines"),
+                )
+                .on_hover_text("Darkness of the line between scanlines\n\
+                                (fades out below 2\u{d7} zoom)");
+                ui.add(egui::Slider::new(&mut screen.crt.glow, 0.0..=1.0).text("Glow"))
+                    .on_hover_text("Phosphor bloom: lit pixels bleed\ninto their surroundings");
+                ui.add(
+                    egui::Slider::new(&mut screen.crt.vignette, 0.0..=1.0).text("Vignette"),
+                )
+                .on_hover_text("Soft darkening towards the screen corners");
+            }
+            if screen != app.settings.screen {
+                app.settings.screen = screen;
                 app.persist();
             }
 

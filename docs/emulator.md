@@ -50,6 +50,31 @@ The Monitor-3 command line works: type e.g. `DUMP 0100` (addresses
 are 4-digit hex) and press Enter. `JUMP FFF0` switches the PMD 85-3
 into the PMD 85-2 compatibility mode.
 
+## The screen
+
+The status bar shows both front-panel LEDs: the red one (PC3) and
+the yellow one (PC2) — the latter shares its line with the speaker,
+so it lights while the acoustic signalization is disabled
+(Shift+END on the monitor) and flickers while a tone plays.
+
+The settings window's SCREEN section picks how the PMD's color
+attribute bits become colors (applied live, no restart):
+
+- **RGB** — the 85-3's RGB output: green, red, blue, violet on
+  black
+- **Mono** — the monochrome TV output, in any phosphor color
+  (green, amber, white; pick freely)
+- **ColorAce** — the [ColorAce hardware
+  mod](https://pmd85.borik.net/wiki/ColorAce): each attribute
+  colors a pair of stacked microrows, the two attributes mixing
+  additively — 7 colors on black. Games and demos using ColorAce
+  display correctly in this mode.
+
+The **CRT effect** renders the screen through a scanline, phosphor
+glow and vignette simulation (each adjustable; off by default). It
+is done on the CPU over the decoded framebuffer and fades its
+scanlines out below 2× zoom, where they would alias.
+
 ## The interface
 
 A transport bar (run/pause/stop/reset, save/load state, speed and
@@ -62,7 +87,8 @@ are open and where they sit — plus the window geometry and
 maximized state — persist in `layout.json` across restarts.
 
 The settings window covers the machine configuration (model, monitor
-ROM, ROM module, applied on reboot), audio, speed, tape behaviour and
+ROM, ROM module, applied on reboot), audio, speed, tape behaviour,
+the screen (see above) and
 the theme: built-in presets plus a color customizer; custom themes
 are JSON files in the themes directory. When the custom titlebar is
 on (the default), the app draws its own titlebar — app icon, window

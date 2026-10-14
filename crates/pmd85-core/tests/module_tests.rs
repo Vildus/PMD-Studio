@@ -102,7 +102,7 @@ fn char_to_key(c: char) -> Option<Key> {
 /// Count lit pixel rows inside a horizontal band of the screen.
 fn lit_rows(machine: &Machine, band: std::ops::Range<usize>) -> usize {
     let mut buf = Vec::new();
-    let fb = vram::decode_into(&machine.bus.memory, ColorProfile::Rgb, &mut buf);
+    let fb = vram::decode_into(&machine.bus.memory, ColorProfile::Rgb, [0x00, 0xD0, 0x00], &mut buf);
     band.filter(|&y| {
         (y * WIDTH * 4..(y + 1) * WIDTH * 4)
             .step_by(4)

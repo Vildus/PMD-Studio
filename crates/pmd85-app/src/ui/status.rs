@@ -1,4 +1,4 @@
-//! Status bar: machine, module, timing, LED, audio state.
+//! Status bar: machine, module, timing, LEDs, audio state.
 
 use crate::app::App;
 use crate::ui::theme::Theme;
@@ -16,7 +16,12 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // LED (PC3 of the system 8255).
+                // LEDs (red = PC3, yellow = PC2 of the system 8255).
+                // The yellow LED shares its line with the speaker:
+                // hardware holds PC2 high while the acoustic
+                // signalization is disabled (Shift+END on the
+                // monitor), so it lights then — and flickers while a
+                // tone plays.
                 let led_on = app.machine.bus.led;
                 let (led_color, led_note) = if led_on {
                     (c(&theme.danger), "red LED on")
@@ -28,6 +33,24 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 ui.painter()
                     .circle_filled(led_rect.center(), 5.0, led_color);
                 resp.on_hover_text(led_note);
+
+                let yellow_on = app.machine.bus.yellow_led;
+                let (yellow_color, yellow_note) = if yellow_on {
+                    (
+                        c(&theme.warn),
+                        "yellow LED on — acoustic signalization off (PC2)",
+                    )
+                } else {
+                    (
+                        egui::Color32::from_rgb(40, 35, 15),
+                        "yellow LED off (PC2; flickers while a tone plays)",
+                    )
+                };
+                let (yellow_rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(yellow_rect.center(), 5.0, yellow_color);
+                resp.on_hover_text(yellow_note);
 
                 label(ui, "MODEL", &theme);
                 ui.label(value_text(

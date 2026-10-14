@@ -45,6 +45,86 @@ pub struct AppSettings {
     /// joystick connector the pad drives. Pads not in the map drive
     /// GPIO/0, the connector virtually all games read.
     pub gamepad_ports: BTreeMap<String, GamepadPort>,
+    /// Screen rendering: color profile and CRT simulation, applied
+    /// live (no restart).
+    pub screen: ScreenSettings,
+}
+
+/// Screen rendering settings: the color decoding of the attribute
+/// bits and the CRT simulation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ScreenSettings {
+    /// Color decoding of the attribute bits.
+    pub profile: ScreenProfile,
+    /// Monochrome phosphor color (RGB bytes), used by the Mono
+    /// profile.
+    pub phosphor: [u8; 3],
+    /// The CRT simulation (scanlines, glow, vignette).
+    pub crt: CrtSettings,
+}
+
+impl Default for ScreenSettings {
+    fn default() -> Self {
+        ScreenSettings {
+            profile: ScreenProfile::Rgb,
+            // Today's hard-coded green.
+            phosphor: [0x00, 0xD0, 0x00],
+            crt: CrtSettings::default(),
+        }
+    }
+}
+
+/// Color decoding of the VRAM attribute bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ScreenProfile {
+    /// Four colors as on the RGB output of a PMD 85-3: green, red,
+    /// blue, violet on black.
+    #[default]
+    Rgb,
+    /// Monochrome TV output, in the phosphor color.
+    Mono,
+    /// The ColorAce hardware mod: attributes mix across microrow
+    /// pairs, 7 colors on black (see
+    /// https://pmd85.borik.net/wiki/ColorAce).
+    ColorAce,
+}
+
+impl ScreenProfile {
+    /// The core's decode profile.
+    pub fn decode(self) -> pmd85_core::vram::ColorProfile {
+        match self {
+            ScreenProfile::Rgb => pmd85_core::vram::ColorProfile::Rgb,
+            ScreenProfile::Mono => pmd85_core::vram::ColorProfile::Mono,
+            ScreenProfile::ColorAce => pmd85_core::vram::ColorProfile::ColorAce,
+        }
+    }
+}
+
+/// The CRT simulation, rendered on the CPU over the decoded
+/// framebuffer.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CrtSettings {
+    /// CRT simulation on.
+    pub enabled: bool,
+    /// Scanline darkness (0..=1).
+    pub scanlines: f32,
+    /// Phosphor glow / bloom strength (0..=1).
+    pub glow: f32,
+    /// Vignette darkness (0..=1).
+    pub vignette: f32,
+}
+
+impl Default for CrtSettings {
+    fn default() -> Self {
+        CrtSettings {
+            enabled: false,
+            scanlines: 0.35,
+            glow: 0.25,
+            vignette: 0.35,
+        }
+    }
 }
 
 /// Which joystick connector a gamepad drives.
@@ -85,6 +165,7 @@ impl Default for AppSettings {
             custom_titlebar: true,
             joystick_enabled: true,
             gamepad_ports: BTreeMap::new(),
+            screen: ScreenSettings::default(),
         }
     }
 }
@@ -195,6 +276,8 @@ mod tests {
         assert!(s.tape_monitor);
         assert!(s.tape_autostop);
         assert!(s.tape_warp);
+        assert_eq!(s.screen, ScreenSettings::default());
+        assert!(!s.screen.crt.enabled, "CRT off out of the box");
     }
 
     #[test]
@@ -218,6 +301,16 @@ mod tests {
             )]
             .into_iter()
             .collect(),
+            screen: ScreenSettings {
+                profile: ScreenProfile::ColorAce,
+                phosphor: [0xE8, 0xA0, 0x20],
+                crt: CrtSettings {
+                    enabled: true,
+                    scanlines: 0.6,
+                    glow: 0.4,
+                    vignette: 0.2,
+                },
+            },
         };
         s.save(&dir);
         let loaded = AppSettings::load(&dir);
@@ -250,6 +343,8 @@ mod tests {
         assert_eq!(s.monitor, None, "monitor defaults to the model's own");
         // New settings keep their defaults when absent from the file.
         assert!(s.tape_monitor);
+        assert_eq!(s.screen.profile, ScreenProfile::Rgb);
+        assert!(!s.screen.crt.enabled);
         assert!(s.tape_autostop);
         assert!(s.tape_warp);
     }

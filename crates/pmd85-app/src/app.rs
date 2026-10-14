@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use pmd85_core::machine::CPU_CLOCK_HZ;
 use pmd85_core::tape::{self, Tape};
 use pmd85_core::tapedeck::PlayItem;
-use pmd85_core::vram::{self, ColorProfile, HEIGHT, WIDTH};
+use pmd85_core::vram::{self, HEIGHT, WIDTH};
 use pmd85_core::{Machine, Model};
 
 use crate::audio;
@@ -635,7 +635,6 @@ pub struct App {
     /// skipped). Cleared whenever the machine is rebuilt.
     pub(crate) boot_state: Option<BootState>,
 
-    pub profile: ColorProfile,
     pub audio: Option<audio::SpeakerOut>,
 
     pub running: bool,
@@ -675,6 +674,9 @@ pub struct App {
     /// Emulated screen texture (created lazily on first UI pass).
     pub screen: Option<egui::TextureHandle>,
     pub decode_buf: Vec<u8>,
+    /// The CRT-simulated framebuffer (double height when the effect
+    /// is on), reused across frames like `decode_buf`.
+    pub(crate) crt_buf: Vec<u8>,
 
     /// App icon texture for the custom titlebar (lazy, like
     /// [`App::screen`]).
@@ -772,7 +774,6 @@ impl App {
             config_module: None,
             ide_module: None,
             boot_state: None,
-            profile: ColorProfile::Rgb,
             audio: None,
             running: true,
             speed: SpeedState {
@@ -797,6 +798,7 @@ impl App {
             active_theme: String::new(),
             screen: None,
             decode_buf: Vec::new(),
+            crt_buf: Vec::new(),
             icon: None,
             window_maximized: false,
             window_size: egui::vec2(980.0, 760.0),
@@ -2189,13 +2191,34 @@ impl App {
     /// emulated frame; also called directly after loading a save state
     /// so a paused machine repaints immediately.
     fn refresh_screen(&mut self) {
-        let image = egui::ColorImage::from_rgba_unmultiplied(
-            [SCREEN.0, SCREEN.1],
-            vram::decode_into(&self.machine.bus.memory, self.profile, &mut self.decode_buf),
+        // Decode with the configured profile, then run the CRT
+        // simulation over the framebuffer (it may double the height
+        // for scanline resolution; the panel stretches it back).
+        let profile = self.settings.screen.profile.decode();
+        let phosphor = self.settings.screen.phosphor;
+        vram::decode_into(
+            &self.machine.bus.memory,
+            profile,
+            phosphor,
+            &mut self.decode_buf,
         );
+        let (pixels, size) = if self.settings.screen.crt.enabled {
+            let scale = self.ui.screen_scale;
+            (
+                crate::crt::render(&self.decode_buf, &mut self.crt_buf, &self.settings.screen.crt, scale),
+                [SCREEN.0, SCREEN.1 * 2],
+            )
+        } else {
+            (self.decode_buf.as_slice(), [SCREEN.0, SCREEN.1])
+        };
+        let image = egui::ColorImage::from_rgba_unmultiplied(size, pixels);
         match &mut self.screen {
-            Some(tex) => tex.set_partial([0, 0], image, egui::TextureOptions::NEAREST),
-            None => {
+            // The CRT toggle changes the texture's height; recreate
+            // it then (set_partial cannot resize).
+            Some(tex) if tex.size() == size => {
+                tex.set_partial([0, 0], image, egui::TextureOptions::NEAREST)
+            }
+            _ => {
                 self.screen = Some(self.ctx.load_texture(
                     "pmd85-screen",
                     image,

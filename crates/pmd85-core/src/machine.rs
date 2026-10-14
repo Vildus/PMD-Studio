@@ -51,6 +51,11 @@ pub struct MachineBus {
     speaker_level: bool,
     /// LED driven from PC3 of the system 8255 (red).
     pub led: bool,
+    /// LED driven from PC2 of the system 8255 (yellow). The same line
+    /// gates the speaker: hardware keeps it high while the acoustic
+    /// signalization is disabled (the monitor's Shift+END toggle),
+    /// which is when the yellow LED lights.
+    pub yellow_led: bool,
     /// Cycle-stamped speaker transitions, drained by the audio frontend.
     speaker_edges: SpeakerEdgeLog,
     /// The speaker level changed during the current instruction; the
@@ -79,6 +84,7 @@ impl MachineBus {
             tape: TapeDeck::new(model == Model::Pmd851),
             speaker_level: false,
             led: false,
+            yellow_led: false,
             speaker_edges: SpeakerEdgeLog::default(),
             pending_speaker_edge: false,
             total_cycles: 0,
@@ -103,6 +109,7 @@ impl MachineBus {
         self.tape.hard_reset(self.total_cycles(), &mut self.uart);
         self.speaker_level = false;
         self.led = false;
+        self.yellow_led = false;
         self.speaker_edges.clear();
         self.pending_speaker_edge = false;
     }
@@ -205,6 +212,7 @@ impl MachineBus {
         self.uart.save_state(w);
         w.bool(self.speaker_level);
         w.bool(self.led);
+        w.bool(self.yellow_led);
         w.len(self.speaker_edges.len());
         for edge in self.speaker_edges.edges() {
             w.u64(edge.cycle);
@@ -228,6 +236,7 @@ impl MachineBus {
         self.uart.load_state(r)?;
         self.speaker_level = r.bool()?;
         self.led = r.bool()?;
+        self.yellow_led = r.bool()?;
         for _ in 0..r.len()? {
             let edge = crate::audio::SpeakerEdge {
                 cycle: r.u64()?,
@@ -377,10 +386,12 @@ impl MachineBus {
                     if reg == 3 {
                         self.memory.set_pmd853_mapping(data & 0x01 != 0);
                     }
-                    // PC2 = speaker, PC3 = LED; both follow the output
-                    // latch (full writes and BSR operations alike).
+                    // PC2 = speaker + yellow LED, PC3 = red LED; both
+                    // follow the output latch (full writes and BSR
+                    // operations alike).
                     self.ppi_system.write(Port::from_index(reg), data);
                     self.led = self.ppi_system.outputs[2] & 0x08 != 0;
+                    self.yellow_led = self.ppi_system.outputs[2] & 0x04 != 0;
                     self.refresh_speaker();
                 }
             }
@@ -761,9 +772,11 @@ impl Machine {
     }
 }
 
-/// Save-state format magic and version.
+/// Save-state format magic and version. Version 2 adds the yellow
+/// LED to the bus section (version 1 states are refused rather
+/// than silently restored wrong).
 const MAGIC: &[u8; 4] = b"PMDS";
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
 
 fn model_tag(model: Model) -> u8 {
     match model {
@@ -928,12 +941,27 @@ mod tests {
         m.bus.io_write(0x87, 0b0000_0101);
         assert!(m.bus.speaker_level());
         assert!(!m.bus.led);
+        assert!(m.bus.yellow_led);
         // BSR set PC3: bit select 3, set -> 0b0000_0111
         m.bus.io_write(0x87, 0b0000_0111);
         assert!(m.bus.led);
         // BSR reset PC2: bit select 2, reset -> 0b0000_0100
         m.bus.io_write(0x87, 0b0000_0100);
         assert!(!m.bus.speaker_level());
+        assert!(!m.bus.yellow_led);
+    }
+
+    #[test]
+    fn yellow_led_follows_pc2_across_resets() {
+        let mut m = Machine::new(Model::Pmd851, &rom(0x1000), None);
+        // Sound off: PC2 high -> yellow LED lit (BSR: bit select 2,
+        // set).
+        m.bus.io_write(0x87, 0b0000_0101);
+        assert!(m.bus.yellow_led);
+        // Reset returns both LEDs to dark.
+        m.bus.reset();
+        assert!(!m.bus.yellow_led);
+        assert!(!m.bus.led);
     }
 
     #[test]

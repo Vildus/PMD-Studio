@@ -265,7 +265,7 @@ fn snapshot_header_is_stable() {
     assert_eq!(&snapshot[0..4], b"PMDS");
     assert_eq!(
         u32::from_le_bytes([snapshot[4], snapshot[5], snapshot[6], snapshot[7]]),
-        1
+        2
     );
     assert_eq!(snapshot[8], 4, "model tag for PMD 85-3");
     // Monitor 3: 8 KiB, CRC of its first byte lives at offset 11.
