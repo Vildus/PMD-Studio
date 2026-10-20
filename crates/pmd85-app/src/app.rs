@@ -17,7 +17,7 @@ use crate::catalog::{RomCatalog, TapeLibrary};
 use crate::config::{self, AppSettings};
 use crate::gamepad::GamepadInput;
 use crate::project::Project;
-use crate::speed::{Pacer, SPEED_MAX, SPEED_MIN, TURBO_BUDGET};
+use crate::speed::{Pacer, Turbo, SPEED_MAX, SPEED_MIN};
 use crate::ui::theme::Theme;
 use crate::ui::UiState;
 
@@ -643,6 +643,8 @@ pub struct App {
     pub running: bool,
     pub speed: SpeedState,
     pub pacer: Pacer,
+    /// Adaptive turbo pacing (measures the render cadence).
+    pub turbo: Turbo,
 
     /// Cassette tape editor/deck state.
     pub tape: TapeState,
@@ -789,6 +791,7 @@ impl App {
                 turbo: false,
             },
             pacer: Pacer::new(),
+            turbo: Turbo::new(),
             frames_done: 0,
             tape: TapeState {
                 auto_stop: settings.tape_autostop,
@@ -2154,14 +2157,23 @@ impl App {
 
         let frames = if self.running {
             if self.speed.turbo {
+                // Unthrottled, but budgeted to a duty-cycled fraction
+                // of the measured render interval: the render loop is
+                // vsync-bound, so a fixed budget would cap turbo far
+                // below what a high multiplier sustains.
+                let budget = self.turbo.budget();
                 let start = Instant::now();
                 let mut frames = 0u64;
-                while start.elapsed() < TURBO_BUDGET {
+                // A breakpoint hit pauses the machine mid-budget; stop
+                // stepping rather than running out the clock on a
+                // machine that is supposed to be stopped.
+                while start.elapsed() < budget && self.running {
                     self.run_frames(1);
                     frames += 1;
                 }
                 frames
             } else {
+                self.turbo.reset();
                 let frames = self.pacer.take_frames(self.speed.multiplier) as u64;
                 self.run_frames(frames);
                 frames
@@ -2169,6 +2181,7 @@ impl App {
         } else {
             // While paused keep the pacing anchored so resuming does
             // not fast-forward through the pause.
+            self.turbo.reset();
             self.pacer.resync();
             if let Some(message) = self.tape.pump(&mut self.machine) {
                 self.notify(message);

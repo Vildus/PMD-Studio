@@ -14,9 +14,28 @@ pub const FRAME_PERIOD_SECS: f64 = 0.020;
 /// Emulated frames per second.
 pub const FRAMES_PER_SEC: f64 = 50.0;
 
-/// Compute budget per render frame while turbo is active: run as many
-/// emulated frames as fit, leaving the rest of the frame for the UI.
-pub const TURBO_BUDGET: Duration = Duration::from_millis(8);
+/// Fraction of each render frame turbo spends emulating; the rest is
+/// left for the UI so it stays interactive while turbo runs.
+pub const TURBO_DUTY_CYCLE: f64 = 0.85;
+/// Bounds for the adaptive per-render-frame turbo budget.
+pub const TURBO_BUDGET_MIN: Duration = Duration::from_millis(1);
+pub const TURBO_BUDGET_MAX: Duration = Duration::from_millis(50);
+/// Budget for the first render frame of a turbo engagement, before
+/// the render cadence has been measured.
+pub const TURBO_BUDGET_INIT: Duration = Duration::from_millis(8);
+
+/// Per-render-frame turbo emulation budget for a measured render
+/// interval: a [`TURBO_DUTY_CYCLE`] fraction of it, clamped.
+///
+/// A fixed budget cannot work: the render loop is vsync-bound (a 60 Hz
+/// display allows ~16.6 ms per render frame), so a fixed 8 ms would
+/// cap turbo at under half the CPU — slower than a high speed
+/// multiplier, which runs every frame the wall clock owes it with no
+/// budget at all.
+pub fn turbo_budget(interval: Duration) -> Duration {
+    Duration::from_secs_f64(interval.as_secs_f64() * TURBO_DUTY_CYCLE)
+        .clamp(TURBO_BUDGET_MIN, TURBO_BUDGET_MAX)
+}
 
 /// Available speed presets (multipliers of real time).
 pub const SPEED_PRESETS: &[f64] = &[0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 25.0, 50.0];
@@ -125,6 +144,69 @@ impl Pacer {
     }
 }
 
+/// Adaptive turbo pacing: measures the render cadence and hands out
+/// the emulation budget for each render frame.
+///
+/// The budget follows the measured render interval (smoothed, since
+/// vsync jitter must not swing it): turbo spends
+/// [`TURBO_DUTY_CYCLE`] of each render frame emulating. If a frame
+/// overshoots (a missed vsync), the measured interval grows and so
+/// does the next budget, converging on the fastest render cadence the
+/// host can sustain while keeping the UI alive. [`Self::reset`] is
+/// called whenever turbo is not engaged, so a fresh engagement starts
+/// from [`TURBO_BUDGET_INIT`] and adapts within a few frames.
+#[derive(Debug)]
+pub struct Turbo {
+    /// Exponentially smoothed interval between turbo render frames;
+    /// `None` until the first interval has been measured.
+    interval: Option<Duration>,
+    /// Render time of the previous [`Self::budget`] call.
+    last: Option<Instant>,
+}
+
+impl Default for Turbo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Turbo {
+    pub fn new() -> Self {
+        Turbo {
+            interval: None,
+            last: None,
+        }
+    }
+
+    /// Emulation budget for this render frame; call once per render
+    /// frame while turbo is engaged.
+    pub fn budget(&mut self) -> Duration {
+        let now = Instant::now();
+        let sample = self.last.replace(now).map(|prev| now.duration_since(prev));
+        match (sample, self.interval) {
+            (Some(sample), Some(interval)) => {
+                let smoothed = interval.mul_f64(0.7) + sample.mul_f64(0.3);
+                self.interval = Some(smoothed);
+                turbo_budget(smoothed)
+            }
+            // First measured interval: adopt it without smoothing.
+            (Some(sample), None) => {
+                self.interval = Some(sample);
+                turbo_budget(sample)
+            }
+            // First frame of an engagement: cadence unknown yet.
+            (None, _) => TURBO_BUDGET_INIT,
+        }
+    }
+
+    /// Forget the measured cadence: turbo disengaged (or the machine
+    /// paused), so the next engagement starts fresh.
+    pub fn reset(&mut self) {
+        self.interval = None;
+        self.last = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,6 +290,56 @@ mod tests {
     #[should_panic]
     fn rejects_bad_multiplier() {
         frames_due(0.0, 0.0, 0.0);
+    }
+
+    #[test]
+    fn turbo_budget_tracks_the_render_interval() {
+        // A 60 Hz render cadence: most of the frame is spent
+        // emulating, a fraction is left for the UI.
+        let budget = turbo_budget(Duration::from_secs_f64(1.0 / 60.0));
+        assert!((budget.as_secs_f64() - (1.0 / 60.0) * TURBO_DUTY_CYCLE).abs() < 1e-9);
+        // A missed vsync (30 Hz) grows the budget proportionally, so
+        // turbo still fills the frame instead of stalling at a fixed
+        // cap.
+        let budget = turbo_budget(Duration::from_secs_f64(1.0 / 30.0));
+        assert!((budget.as_secs_f64() - (1.0 / 30.0) * TURBO_DUTY_CYCLE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn turbo_budget_is_clamped() {
+        // Far below any render cadence: keep a floor so at least some
+        // frames run.
+        assert_eq!(turbo_budget(Duration::ZERO), TURBO_BUDGET_MIN);
+        // A throttled/occluded window: do not let one render frame
+        // monopolize the process.
+        assert_eq!(
+            turbo_budget(Duration::from_secs(10)),
+            TURBO_BUDGET_MAX
+        );
+    }
+
+    #[test]
+    fn turbo_starts_from_the_initial_budget() {
+        let mut turbo = Turbo::new();
+        // First frame of an engagement: cadence unknown.
+        assert_eq!(turbo.budget(), TURBO_BUDGET_INIT);
+        // Resetting (turbo off, machine paused) forgets the cadence.
+        turbo.reset();
+        assert_eq!(turbo.budget(), TURBO_BUDGET_INIT);
+    }
+
+    #[test]
+    fn turbo_adapts_to_a_slow_cadence() {
+        let mut turbo = Turbo::new();
+        turbo.budget();
+        // Frame pacing far slower than a real redraw: the measured
+        // interval grows, and with it the budget (up to the clamp).
+        std::thread::sleep(Duration::from_millis(30));
+        let first = turbo.budget();
+        assert!(first > TURBO_BUDGET_INIT);
+        std::thread::sleep(Duration::from_millis(30));
+        let second = turbo.budget();
+        assert!(second >= TURBO_BUDGET_MIN && second <= TURBO_BUDGET_MAX);
     }
 
     #[test]
