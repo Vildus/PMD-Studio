@@ -16,24 +16,13 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
         )
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // LEDs (red = PC3, yellow = PC2 of the system 8255).
-                // The yellow LED shares its line with the speaker:
-                // hardware holds PC2 high while the acoustic
+                // LEDs (yellow = PC2, red = PC3 of the system 8255) —
+                // in the real PMD's order: yellow on the left, red on
+                // the right. The yellow LED shares its line with the
+                // speaker: hardware holds PC2 high while the acoustic
                 // signalization is disabled (Shift+END on the
                 // monitor), so it lights then — and flickers while a
                 // tone plays.
-                let led_on = app.machine.bus.led;
-                let (led_color, led_note) = if led_on {
-                    (c(&theme.danger), "red LED on")
-                } else {
-                    (egui::Color32::from_rgb(40, 20, 20), "red LED off")
-                };
-                let (led_rect, resp) =
-                    ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(led_rect.center(), 5.0, led_color);
-                resp.on_hover_text(led_note);
-
                 let yellow_on = app.machine.bus.yellow_led;
                 let (yellow_color, yellow_note) = if yellow_on {
                     (
@@ -51,6 +40,18 @@ pub fn draw(ui: &mut egui::Ui, app: &mut App) {
                 ui.painter()
                     .circle_filled(yellow_rect.center(), 5.0, yellow_color);
                 resp.on_hover_text(yellow_note);
+
+                let led_on = app.machine.bus.led;
+                let (led_color, led_note) = if led_on {
+                    (c(&theme.danger), "red LED on")
+                } else {
+                    (egui::Color32::from_rgb(40, 20, 20), "red LED off")
+                };
+                let (led_rect, resp) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(led_rect.center(), 5.0, led_color);
+                resp.on_hover_text(led_note);
 
                 label(ui, "MODEL", &theme);
                 ui.label(value_text(
